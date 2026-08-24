@@ -1,0 +1,9 @@
+services:
+  - type: worker
+    name: minestar-discord-bot
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
