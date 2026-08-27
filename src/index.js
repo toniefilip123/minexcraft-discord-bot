@@ -283,7 +283,7 @@ client.on("messageCreate", async message => {
    READY
 ======================================== */
 
-client.once("ready", async () => {
+client.once("clientReady", async () => {
 
   console.log(
     `Zalogowano jako ${client.user.tag}`
