@@ -320,7 +320,7 @@ client.on("interactionCreate", async interaction => {
         const channel = await interaction.guild.channels.create({
           name: `ticket-${interaction.user.id}`,
           type: ChannelType.GuildText,
-          parent: isConfigured(config.TICKET_CATEGORY_ID) ? config.TICKET_CATEGORY_ID : null,
+          parent: null,
           permissionOverwrites: overwrites
         });
 
