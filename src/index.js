@@ -7,7 +7,7 @@ http.createServer((req, res) => {
   res.writeHead(200);
   res.end("Bot Discord działa!");
 }).listen(PORT, "0.0.0.0", () => {
-console.log(`Serwer HTTP działa na porcie ${PORT}`);
+console.log("Serwer HTTP działa na porcie " + PORT);
 });
 
 const {
