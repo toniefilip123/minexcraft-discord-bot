@@ -1,4 +1,3 @@
-```js
 const http = require("http");
 
 const PORT = process.env.PORT || 3000;
@@ -35,9 +34,9 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message]
 });
 
-// =====================================================
+// =========================
 // WARNS
-// =====================================================
+// =========================
 
 const warns = new Map();
 
@@ -63,23 +62,9 @@ function clearWarns(userId) {
   warns.delete(userId);
 }
 
-// =====================================================
-// AUTOMATYCZNE POWTÓRZONE WIADOMOŚCI
-// 3 IDENTYCZNE WIADOMOŚCI POD RZĄD = WARN
-// =====================================================
-
-const repeatedMessages = new Map();
-
-function normalizeMessage(content) {
-  return content
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, " ");
-}
-
-// =====================================================
+// =========================
 // KOMENDY
-// =====================================================
+// =========================
 
 const commands = [
   new SlashCommandBuilder()
@@ -158,6 +143,10 @@ const commands = [
     .setName("serverinfo")
     .setDescription("Pokazuje informacje o serwerze"),
 
+  // =========================
+  // NOWE KOMENDY WARN
+  // =========================
+
   new SlashCommandBuilder()
     .setName("warn")
     .setDescription("Nadaje ostrzeżenie użytkownikowi")
@@ -191,9 +180,9 @@ const commands = [
     )
 ].map(c => c.toJSON());
 
-// =====================================================
+// =========================
 // FUNKCJE
-// =====================================================
+// =========================
 
 function isConfigured(value) {
   return value && !value.startsWith("WSTAW_");
@@ -221,9 +210,9 @@ async function sendLog(guild, title, description) {
   }).catch(() => {});
 }
 
-// =====================================================
-// READY
-// =====================================================
+// =========================
+// BOT READY
+// =========================
 
 client.once("ready", async () => {
   console.log(`Zalogowano jako ${client.user.tag}`);
@@ -240,104 +229,17 @@ client.once("ready", async () => {
   console.log("Komendy slash zostały zarejestrowane.");
 });
 
-// =====================================================
-// AUTOMATYCZNY WARN ZA 3 IDENTYCZNE WIADOMOŚCI
-// =====================================================
-
-client.on("messageCreate", async message => {
-  try {
-    if (!message.guild) return;
-    if (message.author.bot) return;
-
-    const content = normalizeMessage(message.content);
-
-    // Puste wiadomości pomijamy
-    if (!content) return;
-
-    const key = `${message.guild.id}-${message.author.id}`;
-
-    const previous = repeatedMessages.get(key);
-
-    if (!previous || previous.content !== content) {
-      repeatedMessages.set(key, {
-        content: content,
-        count: 1
-      });
-
-      return;
-    }
-
-    previous.count++;
-
-    // 3 takie same wiadomości
-    if (previous.count >= 3) {
-
-      const count = addWarn(
-        message.author.id,
-        "AUTOMOD",
-        "Wysłanie 3 identycznych wiadomości pod rząd."
-      );
-
-      // Usuwamy trzecią wiadomość
-      await message.delete().catch(() => {});
-
-      const embed = new EmbedBuilder()
-        .setColor(0xffcc00)
-        .setTitle("⚠️ Automatyczny warn")
-        .setDescription(
-          `**${message.author.tag}** otrzymał automatycznego warna za spam.`
-        )
-        .addFields(
-          {
-            name: "Powód",
-            value: "3 identyczne wiadomości pod rząd."
-          },
-          {
-            name: "Liczba warnów",
-            value: `${count}`
-          }
-        )
-        .setTimestamp();
-
-      await message.channel.send({
-        embeds: [embed]
-      }).then(msg => {
-        setTimeout(() => {
-          msg.delete().catch(() => {});
-        }, 5000);
-      }).catch(() => {});
-
-      await sendLog(
-        message.guild,
-        "⚠️ Automatyczny warn",
-        `**Użytkownik:** ${message.author.tag}\n` +
-        `**Powód:** 3 identyczne wiadomości pod rząd.\n` +
-        `**Liczba warnów:** ${count}`
-      );
-
-      // Reset licznika
-      repeatedMessages.delete(key);
-    }
-
-  } catch (error) {
-    console.error("Błąd automatycznego warna:", error);
-  }
-});
-
-// =====================================================
+// =========================
 // NOWY UŻYTKOWNIK
-// =====================================================
+// =========================
 
 client.on("guildMemberAdd", async member => {
-
   if (isConfigured(config.WELCOME_CHANNEL_ID)) {
-
     const channel = member.guild.channels.cache.get(
       config.WELCOME_CHANNEL_ID
     );
 
     if (channel) {
-
       const embed = new EmbedBuilder()
         .setColor(config.EMBED_COLOR)
         .setTitle("👋 Witamy na serwerze!")
@@ -360,26 +262,23 @@ client.on("guildMemberAdd", async member => {
   );
 });
 
-// =====================================================
+// =========================
 // UŻYTKOWNIK WYSZEDŁ
-// =====================================================
+// =========================
 
 client.on("guildMemberRemove", async member => {
-
   await sendLog(
     member.guild,
     "📤 Użytkownik wyszedł",
     `${member.user.tag} opuścił serwer.`
   );
-
 });
 
-// =====================================================
+// =========================
 // USUNIĘTA WIADOMOŚĆ
-// =====================================================
+// =========================
 
 client.on("messageDelete", async message => {
-
   if (!message.guild || message.author?.bot) return;
 
   const content =
@@ -392,26 +291,24 @@ client.on("messageDelete", async message => {
     `**Kanał:** ${message.channel}\n` +
     `**Treść:** ${content}`
   );
-
 });
 
-// =====================================================
+// =========================
 // INTERAKCJE
-// =====================================================
+// =========================
 
 client.on("interactionCreate", async interaction => {
-
   try {
 
-    // =================================================
+    // =========================
     // KOMENDY SLASH
-    // =================================================
+    // =========================
 
     if (interaction.isChatInputCommand()) {
 
-      // =================================================
+      // =========================
       // WERYFIKACJA
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "weryfikacja") {
 
@@ -436,9 +333,9 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      // =================================================
-      // TICKET
-      // =================================================
+      // =========================
+      // TICKET PANEL
+      // =========================
 
       if (interaction.commandName === "ticket") {
 
@@ -463,9 +360,9 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      // =================================================
+      // =========================
       // CLEAR
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "clear") {
 
@@ -493,9 +390,9 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      // =================================================
+      // =========================
       // BAN
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "ban") {
 
@@ -546,9 +443,9 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      // =================================================
+      // =========================
       // KICK
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "kick") {
 
@@ -590,9 +487,9 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      // =================================================
+      // =========================
       // MUTE
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "mute") {
 
@@ -633,9 +530,9 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      // =================================================
+      // =========================
       // UNMUTE
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "unmute") {
 
@@ -673,9 +570,9 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      // =================================================
+      // =========================
       // SAY
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "say") {
 
@@ -701,9 +598,9 @@ client.on("interactionCreate", async interaction => {
         return interaction.channel.send(text);
       }
 
-      // =================================================
+      // =========================
       // SERVERINFO
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "serverinfo") {
 
@@ -737,9 +634,9 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      // =================================================
+      // =========================
       // WARN
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "warn") {
 
@@ -749,8 +646,7 @@ client.on("interactionCreate", async interaction => {
           )
         ) {
           return interaction.reply({
-            content:
-              "❌ Nie masz uprawnień do warnowania.",
+            content: "❌ Nie masz uprawnień do warnowania.",
             ephemeral: true
           });
         }
@@ -803,9 +699,9 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      // =================================================
+      // =========================
       // WARNS
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "warns") {
 
@@ -836,8 +732,7 @@ client.on("interactionCreate", async interaction => {
           .setTitle(`⚠️ Warny — ${user.tag}`)
           .setDescription(list)
           .setFooter({
-            text:
-              `Liczba warnów: ${userWarns.length}`
+            text: `Liczba warnów: ${userWarns.length}`
           })
           .setTimestamp();
 
@@ -847,9 +742,9 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      // =================================================
+      // =========================
       // CLEARWARNS
-      // =================================================
+      // =========================
 
       if (interaction.commandName === "clearwarns") {
 
@@ -886,15 +781,15 @@ client.on("interactionCreate", async interaction => {
       }
     }
 
-    // =================================================
+    // =========================
     // PRZYCISKI
-    // =================================================
+    // =========================
 
     if (interaction.isButton()) {
 
-      // =================================================
+      // =========================
       // VERIFY
-      // =================================================
+      // =========================
 
       if (interaction.customId === "verify") {
 
@@ -928,9 +823,9 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      // =================================================
+      // =========================
       // CREATE TICKET
-      // =================================================
+      // =========================
 
       if (interaction.customId === "create_ticket") {
 
@@ -950,7 +845,6 @@ client.on("interactionCreate", async interaction => {
         }
 
         const overwrites = [
-
           {
             id: interaction.guild.roles.everyone.id,
             deny: [
@@ -1050,9 +944,9 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      // =================================================
+      // =========================
       // CLOSE TICKET
-      // =================================================
+      // =========================
 
       if (interaction.customId === "close_ticket") {
 
@@ -1084,12 +978,11 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-// =====================================================
+// =========================
 // TOKEN
-// =====================================================
+// =========================
 
 if (!process.env.DISCORD_TOKEN) {
-
   console.error(
     "Brak DISCORD_TOKEN. Ustaw zmienną środowiskową DISCORD_TOKEN."
   );
@@ -1098,4 +991,3 @@ if (!process.env.DISCORD_TOKEN) {
 }
 
 client.login(process.env.DISCORD_TOKEN);
-```
