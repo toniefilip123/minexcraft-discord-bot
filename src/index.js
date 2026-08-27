@@ -7,7 +7,7 @@ http.createServer((req, res) => {
   res.writeHead(200);
   res.end("Bot Discord działa!");
 }).listen(PORT, "0.0.0.0", () => {
-console.log("Serwer HTTP działa na porcie " + PORT);
+  console.log(`Serwer HTTP działa na porcie ${PORT}`);
 });
 
 const {
@@ -35,14 +35,51 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message]
 });
 
-/*
-========================================
- AUTOMATYCZNY WARN ZA SPAM
- 5 takich samych wiadomości pod rząd = WARN
-========================================
-*/
+// =====================================================
+// WARNS
+// =====================================================
 
-const spamCounter = new Map();
+const warns = new Map();
+
+function getWarns(userId) {
+  return warns.get(userId) || [];
+}
+
+function addWarn(userId, moderator, reason) {
+  const userWarns = getWarns(userId);
+
+  userWarns.push({
+    moderator,
+    reason,
+    date: new Date()
+  });
+
+  warns.set(userId, userWarns);
+
+  return userWarns.length;
+}
+
+function clearWarns(userId) {
+  warns.delete(userId);
+}
+
+// =====================================================
+// AUTOMATYCZNE POWTÓRZONE WIADOMOŚCI
+// 3 IDENTYCZNE WIADOMOŚCI POD RZĄD = WARN
+// =====================================================
+
+const repeatedMessages = new Map();
+
+function normalizeMessage(content) {
+  return content
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+// =====================================================
+// KOMENDY
+// =====================================================
 
 const commands = [
   new SlashCommandBuilder()
@@ -119,8 +156,44 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("serverinfo")
-    .setDescription("Pokazuje informacje o serwerze")
+    .setDescription("Pokazuje informacje o serwerze"),
+
+  new SlashCommandBuilder()
+    .setName("warn")
+    .setDescription("Nadaje ostrzeżenie użytkownikowi")
+    .addUserOption(o =>
+      o.setName("uzytkownik")
+        .setDescription("Użytkownik")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("powod")
+        .setDescription("Powód ostrzeżenia")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("warns")
+    .setDescription("Pokazuje ostrzeżenia użytkownika")
+    .addUserOption(o =>
+      o.setName("uzytkownik")
+        .setDescription("Użytkownik")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("clearwarns")
+    .setDescription("Usuwa wszystkie ostrzeżenia użytkownika")
+    .addUserOption(o =>
+      o.setName("uzytkownik")
+        .setDescription("Użytkownik")
+        .setRequired(true)
+    )
 ].map(c => c.toJSON());
+
+// =====================================================
+// FUNKCJE
+// =====================================================
 
 function isConfigured(value) {
   return value && !value.startsWith("WSTAW_");
@@ -143,86 +216,14 @@ async function sendLog(guild, title, description) {
     .setDescription(description)
     .setTimestamp();
 
-  await channel.send({ embeds: [embed] }).catch(() => {});
+  await channel.send({
+    embeds: [embed]
+  }).catch(() => {});
 }
 
-/*
-========================================
- AUTOMATYCZNY WARN
-========================================
-*/
-
-async function giveAutoWarn(message) {
-  const userId = message.author.id;
-
-  await message.channel.send(
-    `⚠️ ${message.author} otrzymał **automatycznego WARNA** za wysłanie 5 razy tej samej wiadomości.`
-  ).catch(() => {});
-
-  await sendLog(
-    message.guild,
-    "⚠️ Automatyczny WARN",
-    `**Użytkownik:** ${message.author.tag}\n` +
-    `**Powód:** 5 razy ta sama wiadomość pod rząd\n` +
-    `**Wiadomość:** ${message.content.slice(0, 1000)}`
-  );
-
-  console.log(
-    `AUTOMATYCZNY WARN: ${message.author.tag} - 5 takich samych wiadomości`
-  );
-
-  // Reset po otrzymaniu warna
-  spamCounter.delete(userId);
-}
-
-/*
-========================================
- WIADOMOŚCI
-========================================
-*/
-
-client.on("messageCreate", async message => {
-  if (!message.guild) return;
-  if (message.author.bot) return;
-
-  const content = message.content.trim();
-
-  if (!content) return;
-
-  const userId = message.author.id;
-
-  const previous = spamCounter.get(userId);
-
-  // Jeżeli wiadomość jest taka sama jak poprzednia
-  if (previous && previous.content === content) {
-    previous.count++;
-
-    spamCounter.set(userId, previous);
-
-    console.log(
-      `${message.author.tag}: ta sama wiadomość ${previous.count}/5`
-    );
-
-    // 5 takich samych wiadomości
-    if (previous.count >= 5) {
-      await giveAutoWarn(message);
-    }
-
-    return;
-  }
-
-  // Inna wiadomość = reset licznika
-  spamCounter.set(userId, {
-    content: content,
-    count: 1
-  });
-});
-
-/*
-========================================
- READY
-========================================
-*/
+// =====================================================
+// READY
+// =====================================================
 
 client.once("ready", async () => {
   console.log(`Zalogowano jako ${client.user.tag}`);
@@ -237,22 +238,106 @@ client.once("ready", async () => {
   await guild.commands.set(commands);
 
   console.log("Komendy slash zostały zarejestrowane.");
-  console.log("Automatyczny WARN: 5 takich samych wiadomości.");
 });
 
-/*
-========================================
- POWITANIA
-========================================
-*/
+// =====================================================
+// AUTOMATYCZNY WARN ZA 3 IDENTYCZNE WIADOMOŚCI
+// =====================================================
+
+client.on("messageCreate", async message => {
+  try {
+    if (!message.guild) return;
+    if (message.author.bot) return;
+
+    const content = normalizeMessage(message.content);
+
+    // Puste wiadomości pomijamy
+    if (!content) return;
+
+    const key = `${message.guild.id}-${message.author.id}`;
+
+    const previous = repeatedMessages.get(key);
+
+    if (!previous || previous.content !== content) {
+      repeatedMessages.set(key, {
+        content: content,
+        count: 1
+      });
+
+      return;
+    }
+
+    previous.count++;
+
+    // 3 takie same wiadomości
+    if (previous.count >= 3) {
+
+      const count = addWarn(
+        message.author.id,
+        "AUTOMOD",
+        "Wysłanie 3 identycznych wiadomości pod rząd."
+      );
+
+      // Usuwamy trzecią wiadomość
+      await message.delete().catch(() => {});
+
+      const embed = new EmbedBuilder()
+        .setColor(0xffcc00)
+        .setTitle("⚠️ Automatyczny warn")
+        .setDescription(
+          `**${message.author.tag}** otrzymał automatycznego warna za spam.`
+        )
+        .addFields(
+          {
+            name: "Powód",
+            value: "3 identyczne wiadomości pod rząd."
+          },
+          {
+            name: "Liczba warnów",
+            value: `${count}`
+          }
+        )
+        .setTimestamp();
+
+      await message.channel.send({
+        embeds: [embed]
+      }).then(msg => {
+        setTimeout(() => {
+          msg.delete().catch(() => {});
+        }, 5000);
+      }).catch(() => {});
+
+      await sendLog(
+        message.guild,
+        "⚠️ Automatyczny warn",
+        `**Użytkownik:** ${message.author.tag}\n` +
+        `**Powód:** 3 identyczne wiadomości pod rząd.\n` +
+        `**Liczba warnów:** ${count}`
+      );
+
+      // Reset licznika
+      repeatedMessages.delete(key);
+    }
+
+  } catch (error) {
+    console.error("Błąd automatycznego warna:", error);
+  }
+});
+
+// =====================================================
+// NOWY UŻYTKOWNIK
+// =====================================================
 
 client.on("guildMemberAdd", async member => {
+
   if (isConfigured(config.WELCOME_CHANNEL_ID)) {
+
     const channel = member.guild.channels.cache.get(
       config.WELCOME_CHANNEL_ID
     );
 
     if (channel) {
+
       const embed = new EmbedBuilder()
         .setColor(config.EMBED_COLOR)
         .setTitle("👋 Witamy na serwerze!")
@@ -262,7 +347,9 @@ client.on("guildMemberAdd", async member => {
         .setThumbnail(member.user.displayAvatarURL())
         .setTimestamp();
 
-      await channel.send({ embeds: [embed] }).catch(() => {});
+      await channel.send({
+        embeds: [embed]
+      }).catch(() => {});
     }
   }
 
@@ -273,21 +360,26 @@ client.on("guildMemberAdd", async member => {
   );
 });
 
+// =====================================================
+// UŻYTKOWNIK WYSZEDŁ
+// =====================================================
+
 client.on("guildMemberRemove", async member => {
+
   await sendLog(
     member.guild,
     "📤 Użytkownik wyszedł",
     `${member.user.tag} opuścił serwer.`
   );
+
 });
 
-/*
-========================================
- USUWANIE WIADOMOŚCI
-========================================
-*/
+// =====================================================
+// USUNIĘTA WIADOMOŚĆ
+// =====================================================
 
 client.on("messageDelete", async message => {
+
   if (!message.guild || message.author?.bot) return;
 
   const content =
@@ -300,28 +392,26 @@ client.on("messageDelete", async message => {
     `**Kanał:** ${message.channel}\n` +
     `**Treść:** ${content}`
   );
+
 });
 
-/*
-========================================
- INTERAKCJE
-========================================
-*/
+// =====================================================
+// INTERAKCJE
+// =====================================================
 
 client.on("interactionCreate", async interaction => {
+
   try {
 
-    /*
-    ================================
-    KOMENDY SLASH
-    ================================
-    */
+    // =================================================
+    // KOMENDY SLASH
+    // =================================================
 
     if (interaction.isChatInputCommand()) {
 
-      /*
-      WERYFIKACJA
-      */
+      // =================================================
+      // WERYFIKACJA
+      // =================================================
 
       if (interaction.commandName === "weryfikacja") {
 
@@ -346,9 +436,9 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      /*
-      TICKET
-      */
+      // =================================================
+      // TICKET
+      // =================================================
 
       if (interaction.commandName === "ticket") {
 
@@ -373,9 +463,9 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      /*
-      CLEAR
-      */
+      // =================================================
+      // CLEAR
+      // =================================================
 
       if (interaction.commandName === "clear") {
 
@@ -390,20 +480,22 @@ client.on("interactionCreate", async interaction => {
           });
         }
 
-        const amount = interaction.options.getInteger("ilosc");
+        const amount =
+          interaction.options.getInteger("ilosc");
 
         const deleted =
           await interaction.channel.bulkDelete(amount, true);
 
         return interaction.reply({
-          content: `🧹 Usunięto **${deleted.size}** wiadomości.`,
+          content:
+            `🧹 Usunięto **${deleted.size}** wiadomości.`,
           ephemeral: true
         });
       }
 
-      /*
-      BAN
-      */
+      // =================================================
+      // BAN
+      // =================================================
 
       if (interaction.commandName === "ban") {
 
@@ -438,7 +530,9 @@ client.on("interactionCreate", async interaction => {
           });
         }
 
-        await member.ban({ reason });
+        await member.ban({
+          reason
+        });
 
         await interaction.reply(
           `🔨 **${user.tag}** został zbanowany. Powód: ${reason}`
@@ -452,9 +546,9 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      /*
-      KICK
-      */
+      // =================================================
+      // KICK
+      // =================================================
 
       if (interaction.commandName === "kick") {
 
@@ -483,7 +577,8 @@ client.on("interactionCreate", async interaction => {
 
         if (!member) {
           return interaction.reply({
-            content: "❌ Nie znaleziono użytkownika.",
+            content:
+              "❌ Nie znaleziono użytkownika.",
             ephemeral: true
           });
         }
@@ -495,9 +590,9 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      /*
-      MUTE
-      */
+      // =================================================
+      // MUTE
+      // =================================================
 
       if (interaction.commandName === "mute") {
 
@@ -522,7 +617,8 @@ client.on("interactionCreate", async interaction => {
 
         if (!member) {
           return interaction.reply({
-            content: "❌ Nie znaleziono użytkownika.",
+            content:
+              "❌ Nie znaleziono użytkownika.",
             ephemeral: true
           });
         }
@@ -537,9 +633,9 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      /*
-      UNMUTE
-      */
+      // =================================================
+      // UNMUTE
+      // =================================================
 
       if (interaction.commandName === "unmute") {
 
@@ -564,7 +660,8 @@ client.on("interactionCreate", async interaction => {
 
         if (!member) {
           return interaction.reply({
-            content: "❌ Nie znaleziono użytkownika.",
+            content:
+              "❌ Nie znaleziono użytkownika.",
             ephemeral: true
           });
         }
@@ -576,9 +673,9 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      /*
-      SAY
-      */
+      // =================================================
+      // SAY
+      // =================================================
 
       if (interaction.commandName === "say") {
 
@@ -604,9 +701,9 @@ client.on("interactionCreate", async interaction => {
         return interaction.channel.send(text);
       }
 
-      /*
-      SERVERINFO
-      */
+      // =================================================
+      // SERVERINFO
+      // =================================================
 
       if (interaction.commandName === "serverinfo") {
 
@@ -639,19 +736,165 @@ client.on("interactionCreate", async interaction => {
           embeds: [embed]
         });
       }
+
+      // =================================================
+      // WARN
+      // =================================================
+
+      if (interaction.commandName === "warn") {
+
+        if (
+          !interaction.memberPermissions.has(
+            PermissionsBitField.Flags.ModerateMembers
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Nie masz uprawnień do warnowania.",
+            ephemeral: true
+          });
+        }
+
+        const user =
+          interaction.options.getUser("uzytkownik");
+
+        const reason =
+          interaction.options.getString("powod");
+
+        const count =
+          addWarn(
+            user.id,
+            interaction.user.tag,
+            reason
+          );
+
+        const embed = new EmbedBuilder()
+          .setColor(0xffcc00)
+          .setTitle("⚠️ Ostrzeżenie")
+          .setDescription(
+            `Użytkownik **${user.tag}** otrzymał ostrzeżenie.`
+          )
+          .addFields(
+            {
+              name: "Powód",
+              value: reason
+            },
+            {
+              name: "Liczba warnów",
+              value: `${count}`
+            },
+            {
+              name: "Moderator",
+              value: interaction.user.tag
+            }
+          )
+          .setTimestamp();
+
+        await interaction.reply({
+          embeds: [embed]
+        });
+
+        return sendLog(
+          interaction.guild,
+          "⚠️ Warn",
+          `**${user.tag}** otrzymał warna od **${interaction.user.tag}**.\n` +
+          `**Powód:** ${reason}\n` +
+          `**Liczba warnów:** ${count}`
+        );
+      }
+
+      // =================================================
+      // WARNS
+      // =================================================
+
+      if (interaction.commandName === "warns") {
+
+        const user =
+          interaction.options.getUser("uzytkownik");
+
+        const userWarns =
+          getWarns(user.id);
+
+        if (userWarns.length === 0) {
+          return interaction.reply({
+            content:
+              `✅ **${user.tag}** nie ma żadnych warnów.`,
+            ephemeral: true
+          });
+        }
+
+        const list = userWarns
+          .map(
+            (warn, index) =>
+              `**${index + 1}.** ${warn.reason}\n` +
+              `👮 Moderator: ${warn.moderator}`
+          )
+          .join("\n\n");
+
+        const embed = new EmbedBuilder()
+          .setColor(0xffcc00)
+          .setTitle(`⚠️ Warny — ${user.tag}`)
+          .setDescription(list)
+          .setFooter({
+            text:
+              `Liczba warnów: ${userWarns.length}`
+          })
+          .setTimestamp();
+
+        return interaction.reply({
+          embeds: [embed],
+          ephemeral: true
+        });
+      }
+
+      // =================================================
+      // CLEARWARNS
+      // =================================================
+
+      if (interaction.commandName === "clearwarns") {
+
+        if (
+          !interaction.memberPermissions.has(
+            PermissionsBitField.Flags.ModerateMembers
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Nie masz uprawnień do usuwania warnów.",
+            ephemeral: true
+          });
+        }
+
+        const user =
+          interaction.options.getUser("uzytkownik");
+
+        const oldCount =
+          getWarns(user.id).length;
+
+        clearWarns(user.id);
+
+        await interaction.reply({
+          content:
+            `🧹 Usunięto **${oldCount}** warnów użytkownika **${user.tag}**.`
+        });
+
+        return sendLog(
+          interaction.guild,
+          "🧹 Usunięto warny",
+          `Warny użytkownika **${user.tag}** zostały usunięte przez **${interaction.user.tag}**.`
+        );
+      }
     }
 
-    /*
-    ================================
-    PRZYCISKI
-    ================================
-    */
+    // =================================================
+    // PRZYCISKI
+    // =================================================
 
     if (interaction.isButton()) {
 
-      /*
-      WERYFIKACJA
-      */
+      // =================================================
+      // VERIFY
+      // =================================================
 
       if (interaction.customId === "verify") {
 
@@ -679,14 +922,15 @@ client.on("interactionCreate", async interaction => {
         await interaction.member.roles.add(role);
 
         return interaction.reply({
-          content: "✅ Zostałeś zweryfikowany!",
+          content:
+            "✅ Zostałeś zweryfikowany!",
           ephemeral: true
         });
       }
 
-      /*
-      TWORZENIE TICKETA
-      */
+      // =================================================
+      // CREATE TICKET
+      // =================================================
 
       if (interaction.customId === "create_ticket") {
 
@@ -699,7 +943,8 @@ client.on("interactionCreate", async interaction => {
 
         if (existing) {
           return interaction.reply({
-            content: `Masz już ticket: ${existing}`,
+            content:
+              `Masz już ticket: ${existing}`,
             ephemeral: true
           });
         }
@@ -799,14 +1044,15 @@ client.on("interactionCreate", async interaction => {
         });
 
         return interaction.reply({
-          content: `✅ Utworzono ticket: ${channel}`,
+          content:
+            `✅ Utworzono ticket: ${channel}`,
           ephemeral: true
         });
       }
 
-      /*
-      ZAMYKANIE TICKETA
-      */
+      // =================================================
+      // CLOSE TICKET
+      // =================================================
 
       if (interaction.customId === "close_ticket") {
 
@@ -838,11 +1084,9 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-/*
-========================================
- LOGOWANIE BOTA
-========================================
-*/
+// =====================================================
+// TOKEN
+// =====================================================
 
 if (!process.env.DISCORD_TOKEN) {
 
