@@ -291,38 +291,69 @@ client.on("interactionCreate", async interaction => {
           return interaction.reply({ content: `Masz już ticket: ${existing}`, ephemeral: true });
         }
 
-        const overwrites = [
-          {
-            id: interaction.guild.roles.everyone.id,
-            deny: [PermissionsBitField.Flags.ViewChannel]
-          },
-          {
-            id: interaction.user.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          }
-        ];
+      const overwrites = [
+  {
+    id: interaction.guild.roles.everyone.id,
+    deny: [PermissionsBitField.Flags.ViewChannel]
+  },
+  {
+    id: interaction.user.id,
+    allow: [
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ReadMessageHistory
+    ]
+  },
+  {
+    id: config.CEO_ROLE_ID,
+    allow: [
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ReadMessageHistory
+    ]
+  },
+  {
+    id: config.ADMIN_ROLE_ID,
+    allow: [
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ReadMessageHistory
+    ]
+  },
+  {
+    id: config.MODERATOR_ROLE_ID,
+    allow: [
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ReadMessageHistory
+    ]
+  },
+  {
+    id: config.POMOCNIK_ROLE_ID,
+    allow: [
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ReadMessageHistory
+    ]
+  },
+  {
+    id: config.HADMIN_ROLE_ID,
+    allow: [
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ReadMessageHistory
+    ]
+  }
+];
 
-        if (isConfigured(config.VERIFIED_ROLE_ID)) {
-          overwrites.push({
-            id: config.VERIFIED_ROLE_ID,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          });
-        }
-
-        const channel = await interaction.guild.channels.create({
-          name: `ticket-${interaction.user.id}`,
-          type: ChannelType.GuildText,
-          parent: null,
-          permissionOverwrites: overwrites
-        });
+const channel = await interaction.guild.channels.create({
+  name: `ticket-${interaction.user.id}`,
+  type: ChannelType.GuildText,
+  parent: config.TICKET_CATEGORY_ID,
+  permissionOverwrites: overwrites
+});
+        
+        
 
         const embed = new EmbedBuilder()
           .setColor(config.EMBED_COLOR)
