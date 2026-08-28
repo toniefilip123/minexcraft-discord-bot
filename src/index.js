@@ -47,6 +47,36 @@ const client = new Client({
 const spamCounter = new Map();
 
 /* ========================================
+   WERYFIKACJA
+======================================== */
+
+const verificationData = new Map();
+
+function generateMathQuestion() {
+  const a = Math.floor(Math.random() * 10) + 1;
+  const b = Math.floor(Math.random() * 10) + 1;
+
+  const operations = ["+", "-", "*"];
+  const operation =
+    operations[Math.floor(Math.random() * operations.length)];
+
+  let answer;
+
+  if (operation === "+") {
+    answer = a + b;
+  } else if (operation === "-") {
+    answer = a - b;
+  } else {
+    answer = a * b;
+  }
+
+  return {
+    question: `${a} ${operation} ${b}`,
+    answer
+  };
+}
+
+/* ========================================
    KOMENDY
 ======================================== */
 
@@ -411,20 +441,53 @@ client.on("interactionCreate", async interaction => {
 
         const embed = new EmbedBuilder()
           .setColor(config.EMBED_COLOR)
-          .setTitle("✅ WERYFIKACJA")
+          .setTitle("⛏️ WERYFIKACJA MINECRAFT")
           .setDescription(
-            "Kliknij przycisk poniżej, aby się zweryfikować."
+            "**Witaj na naszym serwerze!** 👋\n\n" +
+
+            "Aby uzyskać pełny dostęp do serwera, " +
+            "musisz przejść krótką weryfikację.\n\n" +
+
+            "━━━━━━━━━━━━━━━━━━━━\n\n" +
+
+            "### 📋 JAK SIĘ ZWERYFIKOWAĆ?\n\n" +
+
+            "**① Kliknij „Rozpocznij weryfikację”**\n" +
+            "Rozpocznij proces za pomocą przycisku poniżej.\n\n" +
+
+            "**② Podaj swój nick z Minecrafta**\n" +
+            "Wpisz dokładny nick, którego używasz w Minecraft.\n\n" +
+
+            "**③ Rozwiąż działanie matematyczne**\n" +
+            "Bot wyświetli Ci działanie. Podaj prawidłowy wynik.\n\n" +
+
+            "**④ Odbierz rangę**\n" +
+            "Po poprawnej odpowiedzi otrzymasz rangę **Zweryfikowany**.\n\n" +
+
+            "**⑤ Gotowe! 🎉**\n" +
+            "Twój pseudonim na Discordzie zostanie ustawiony na podany nick z Minecrafta.\n\n" +
+
+            "━━━━━━━━━━━━━━━━━━━━\n\n" +
+
+            "⚠️ **WAŻNE**\n" +
+            "Podaj dokładny nick z Minecrafta.\n\n" +
+
+            "🔒 **Bezpieczeństwo**\n" +
+            "Nigdy nie podawaj hasła ani danych logowania do Minecrafta.\n\n" +
+
+            "**Powodzenia i miłej gry! ⛏️**"
           )
           .setFooter({
             text: `${interaction.guild.name} • Weryfikacja`
-          });
+          })
+          .setTimestamp();
 
         const row =
           new ActionRowBuilder().addComponents(
 
             new ButtonBuilder()
               .setCustomId("verify")
-              .setLabel("Zweryfikuj się")
+              .setLabel("Rozpocznij weryfikację")
               .setEmoji("✅")
               .setStyle(ButtonStyle.Success)
 
@@ -819,7 +882,7 @@ client.on("interactionCreate", async interaction => {
     if (interaction.isButton()) {
 
       /* ====================================
-         WERYFIKACJA
+         START WERYFIKACJI
       ==================================== */
 
       if (interaction.customId === "verify") {
@@ -851,13 +914,115 @@ client.on("interactionCreate", async interaction => {
           });
         }
 
-        await interaction.member.roles.add(role);
+        if (
+          interaction.member.roles.cache.has(
+            role.id
+          )
+        ) {
 
-        return interaction.reply({
-          content:
-            "✅ Zostałeś zweryfikowany!",
-          ephemeral: true
-        });
+          return interaction.reply({
+            content:
+              "✅ Jesteś już zweryfikowany!",
+            ephemeral: true
+          });
+        }
+
+        const modal =
+          new ModalBuilder()
+            .setCustomId(
+              "verification_nick"
+            )
+            .setTitle(
+              "⛏️ Weryfikacja Minecraft"
+            );
+
+        const nickInput =
+          new TextInputBuilder()
+            .setCustomId(
+              "minecraft_nick"
+            )
+            .setLabel(
+              "Twój nick z Minecrafta"
+            )
+            .setPlaceholder(
+              "Np. Steve123"
+            )
+            .setStyle(
+              TextInputStyle.Short
+            )
+            .setMinLength(1)
+            .setMaxLength(16)
+            .setRequired(true);
+
+        const row =
+          new ActionRowBuilder()
+            .addComponents(
+              nickInput
+            );
+
+        modal.addComponents(row);
+
+        return interaction.showModal(modal);
+      }
+
+      /* ====================================
+         PODANIE ODPOWIEDZI MATEMATYCZNEJ
+      ==================================== */
+
+      if (
+        interaction.customId ===
+        "verification_answer"
+      ) {
+
+        const data =
+          verificationData.get(
+            interaction.user.id
+          );
+
+        if (!data) {
+
+          return interaction.reply({
+            content:
+              "❌ Twoja weryfikacja wygasła. Rozpocznij ją ponownie.",
+            ephemeral: true
+          });
+        }
+
+        const modal =
+          new ModalBuilder()
+            .setCustomId(
+              "verification_math"
+            )
+            .setTitle(
+              "🧮 Odpowiedź matematyczna"
+            );
+
+        const answerInput =
+          new TextInputBuilder()
+            .setCustomId(
+              "math_answer"
+            )
+            .setLabel(
+              "Wynik działania"
+            )
+            .setPlaceholder(
+              "Np. 25"
+            )
+            .setStyle(
+              TextInputStyle.Short
+            )
+            .setRequired(true)
+            .setMaxLength(10);
+
+        const row =
+          new ActionRowBuilder()
+            .addComponents(
+              answerInput
+            );
+
+        modal.addComponents(row);
+
+        return interaction.showModal(modal);
       }
 
       /* ====================================
@@ -1167,7 +1332,9 @@ client.on("interactionCreate", async interaction => {
         const screenInput =
           new TextInputBuilder()
             .setCustomId("ticket_screen")
-            .setLabel("Screen / dodatkowe informacje")
+            .setLabel(
+              "Screen / dodatkowe informacje"
+            )
             .setPlaceholder(
               "Wklej link do screena lub wpisz brak"
             )
@@ -1195,10 +1362,229 @@ client.on("interactionCreate", async interaction => {
     }
 
     /* ======================================
-       FORMULARZ TICKETA
+       FORMULARZE
     ====================================== */
 
     if (interaction.isModalSubmit()) {
+
+      /* ====================================
+         WERYFIKACJA - NICK MINECRAFT
+      ==================================== */
+
+      if (
+        interaction.customId ===
+        "verification_nick"
+      ) {
+
+        const nick =
+          interaction.fields
+            .getTextInputValue(
+              "minecraft_nick"
+            )
+            .trim();
+
+        if (
+          !/^[a-zA-Z0-9_]+$/.test(nick)
+        ) {
+
+          return interaction.reply({
+            content:
+              "❌ Nick Minecraft może zawierać tylko litery, cyfry oraz znak `_`.",
+            ephemeral: true
+          });
+        }
+
+        const math =
+          generateMathQuestion();
+
+        verificationData.set(
+          interaction.user.id,
+          {
+            nick: nick,
+            answer: math.answer
+          }
+        );
+
+        const embed =
+          new EmbedBuilder()
+            .setColor(config.EMBED_COLOR)
+            .setTitle(
+              "🧮 WERYFIKACJA — KROK 2/2"
+            )
+            .setDescription(
+              `🎮 **Nick Minecraft:** \`${nick}\`\n\n` +
+
+              "Teraz rozwiąż poniższe działanie:\n\n" +
+
+              `# **${math.question} = ?**\n\n` +
+
+              "Kliknij przycisk **Podaj odpowiedź** i wpisz wynik."
+            )
+            .setFooter({
+              text:
+                "Weryfikacja serwera Minecraft"
+            })
+            .setTimestamp();
+
+        const row =
+          new ActionRowBuilder().addComponents(
+
+            new ButtonBuilder()
+              .setCustomId(
+                "verification_answer"
+              )
+              .setLabel("Podaj odpowiedź")
+              .setEmoji("🧮")
+              .setStyle(
+                ButtonStyle.Primary
+              )
+
+          );
+
+        return interaction.reply({
+          embeds: [embed],
+          components: [row],
+          ephemeral: true
+        });
+      }
+
+      /* ====================================
+         WERYFIKACJA - MATEMATYKA
+      ==================================== */
+
+      if (
+        interaction.customId ===
+        "verification_math"
+      ) {
+
+        const data =
+          verificationData.get(
+            interaction.user.id
+          );
+
+        if (!data) {
+
+          return interaction.reply({
+            content:
+              "❌ Twoja weryfikacja wygasła. Rozpocznij ją ponownie.",
+            ephemeral: true
+          });
+        }
+
+        const answerText =
+          interaction.fields
+            .getTextInputValue(
+              "math_answer"
+            )
+            .trim();
+
+        const answer =
+          Number(answerText);
+
+        if (
+          !Number.isFinite(answer) ||
+          answer !== data.answer
+        ) {
+
+          verificationData.delete(
+            interaction.user.id
+          );
+
+          return interaction.reply({
+            content:
+              "❌ **Niepoprawna odpowiedź!**\n\n" +
+              "Musisz rozpocząć weryfikację ponownie.",
+            ephemeral: true
+          });
+        }
+
+        const role =
+          interaction.guild.roles.cache.get(
+            config.VERIFIED_ROLE_ID
+          );
+
+        if (!role) {
+
+          return interaction.reply({
+            content:
+              "❌ Nie znaleziono roli Zweryfikowany.",
+            ephemeral: true
+          });
+        }
+
+        /* USTAWIENIE NICKU */
+
+        try {
+
+          await interaction.member.setNickname(
+            data.nick
+          );
+
+        } catch (error) {
+
+          console.error(
+            "Nie udało się ustawić nicku:",
+            error
+          );
+        }
+
+        /* NADANIE ROLI */
+
+        try {
+
+          await interaction.member.roles.add(
+            role
+          );
+
+        } catch (error) {
+
+          console.error(
+            "Nie udało się nadać roli:",
+            error
+          );
+
+          return interaction.reply({
+            content:
+              "❌ Nie udało się nadać rangi. Sprawdź, czy rola bota jest wyżej niż rola Zweryfikowany.",
+            ephemeral: true
+          });
+        }
+
+        verificationData.delete(
+          interaction.user.id
+        );
+
+        const embed =
+          new EmbedBuilder()
+            .setColor(config.EMBED_COLOR)
+            .setTitle(
+              "🎉 WERYFIKACJA ZAKOŃCZONA!"
+            )
+            .setDescription(
+              `**Gratulacje!** 🎉\n\n` +
+
+              `🎮 **Nick Minecraft:** \`${data.nick}\`\n\n` +
+
+              "✅ Otrzymałeś rangę **Zweryfikowany**.\n" +
+              "🏷️ Twój pseudonim na Discordzie został ustawiony.\n\n" +
+
+              "**Witamy na serwerze! ⛏️**"
+            )
+            .setFooter({
+              text:
+                `${interaction.guild.name} • Weryfikacja`
+            })
+            .setTimestamp();
+
+        return interaction.reply({
+          embeds: [embed],
+          ephemeral: true
+        });
+      }
+
+      /* ====================================
+         FORMULARZ TICKETA
+      ==================================== */
 
       if (
         !interaction.customId.startsWith(
@@ -1304,7 +1690,8 @@ client.on("interactionCreate", async interaction => {
       const overwrites = [
 
         {
-          id: interaction.guild.roles.everyone.id,
+          id:
+            interaction.guild.roles.everyone.id,
 
           deny: [
             PermissionsBitField.Flags.ViewChannel
@@ -1312,7 +1699,8 @@ client.on("interactionCreate", async interaction => {
         },
 
         {
-          id: interaction.user.id,
+          id:
+            interaction.user.id,
 
           allow: [
             PermissionsBitField.Flags.ViewChannel,
@@ -1390,7 +1778,9 @@ client.on("interactionCreate", async interaction => {
             "━━━━━━━━━━━━━━━━━━━━\n\n" +
 
             "🛡️ Administracja zajmie się Twoją sprawą.\n\n" +
+
             "📋 **Przejmij ticket** — osoba z odpowiednią rangą może przejąć sprawę.\n\n" +
+
             "🔒 **Zamknij ticket** — użyj po zakończeniu sprawy."
           )
 
