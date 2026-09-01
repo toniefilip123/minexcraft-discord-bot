@@ -4,7 +4,7 @@ module.exports = {
 
   // ID WŁAŚCICIELA SERWERA
   // Wpisz tutaj swoje ID Discorda
-  OWNER_ID: "TWOJE_ID_DISCORDA",
+  OWNER_ID: "1183342035776843796",
 
   // Kanały
   WELCOME_CHANNEL_ID: "1539255514909900880",
