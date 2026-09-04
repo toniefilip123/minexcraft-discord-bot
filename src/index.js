@@ -13,8 +13,8 @@ const {
   TextInputBuilder,
   TextInputStyle,
   StringSelectMenuBuilder,
-  AuditLogEvent,
-  Events
+  Events,
+  AttachmentBuilder
 } = require("discord.js");
 
 const fs = require("fs");
@@ -23,25 +23,22 @@ const http = require("http");
 
 const config = require("./config");
 
-// ======================================================
-// RENDER
-// ======================================================
+// =====================================================
+// HTTP SERVER - RENDER
+// =====================================================
 
 const PORT = process.env.PORT || 3000;
 
 http.createServer((req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "text/plain; charset=utf-8"
-  });
-
-  res.end("Bot Discord działa!");
-}).listen(PORT, "0.0.0.0", () => {
-  console.log("Serwer HTTP działa na porcie " + PORT);
+  res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+  res.end("Ravexmc.pl Discord Bot działa!");
+}).listen(PORT, () => {
+  console.log(`Serwer HTTP działa na porcie ${PORT}`);
 });
 
-// ======================================================
+// =====================================================
 // CLIENT
-// ======================================================
+// =====================================================
 
 const client = new Client({
   intents: [
@@ -50,129 +47,61 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent
   ],
-
   partials: [
     Partials.Channel,
     Partials.Message
   ]
 });
 
-// ======================================================
-// PLIKI DANYCH
-// ======================================================
+// =====================================================
+// DATA
+// =====================================================
 
-const DATA_DIR = path.join(__dirname, "data");
+const dataDir = path.join(__dirname, "data");
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, {
-    recursive: true
-  });
+if (!fs.existsSync(dataDir)) {
+  fs.mkdirSync(dataDir, { recursive: true });
 }
 
-const ECONOMY_FILE = path.join(
-  DATA_DIR,
-  "economy.json"
-);
+const backupFile = path.join(dataDir, "backup.json");
 
-const XP_FILE = path.join(
-  DATA_DIR,
-  "xp.json"
-);
-
-const BACKUP_FILE = path.join(
-  DATA_DIR,
-  "backup.json"
-);
-
-// ======================================================
-// MAPY
-// ======================================================
-
-const spamCounter = new Map();
-const verificationQuestions = new Map();
-const ticTacToeGames = new Map();
-
-const xpCooldown = new Map();
-
-// ======================================================
-// JSON
-// ======================================================
-
-function loadJSON(file, defaultValue) {
+function loadJSON(file, fallback = {}) {
   try {
     if (!fs.existsSync(file)) {
-      fs.writeFileSync(
-        file,
-        JSON.stringify(defaultValue, null, 2)
-      );
-
-      return defaultValue;
+      return fallback;
     }
 
-    return JSON.parse(
-      fs.readFileSync(file, "utf8")
-    );
+    return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
-    return defaultValue;
+    return fallback;
   }
 }
 
 function saveJSON(file, data) {
-  fs.writeFileSync(
-    file,
-    JSON.stringify(data, null, 2)
-  );
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
 }
 
-let economy = loadJSON(
-  ECONOMY_FILE,
-  {}
-);
-
-let xpData = loadJSON(
-  XP_FILE,
-  {}
-);
-
-// ======================================================
-// FUNKCJE
-// ======================================================
+// =====================================================
+// HELPERS
+// =====================================================
 
 function isConfigured(value) {
-  return (
-    value &&
-    !String(value).startsWith("WSTAW_")
-  );
+  return value && !String(value).startsWith("WSTAW_");
 }
 
-function isOwner(interaction) {
-  if (!interaction.guild) {
-    return false;
-  }
-
-  return (
-    interaction.user.id === config.OWNER_ID &&
-    interaction.guild.ownerId === interaction.user.id
-  );
+function isOwner(userId) {
+  return userId === config.OWNER_ID;
 }
 
 function getLogChannel(guild) {
-  if (!guild) return null;
+  if (!isConfigured(config.LOG_CHANNEL_ID)) return null;
 
-  return guild.channels.cache.get(
-    config.LOG_CHANNEL_ID
-  );
+  return guild.channels.cache.get(config.LOG_CHANNEL_ID) || null;
 }
 
-async function sendLog(
-  guild,
-  title,
-  description,
-  color = config.EMBED_COLOR
-) {
+async function sendLog(guild, title, description, color = config.EMBED_COLOR) {
   try {
     const channel = getLogChannel(guild);
-
     if (!channel) return;
 
     const embed = new EmbedBuilder()
@@ -181,14 +110,9 @@ async function sendLog(
       .setDescription(description)
       .setTimestamp();
 
-    await channel.send({
-      embeds: [embed]
-    });
+    await channel.send({ embeds: [embed] });
   } catch (error) {
-    console.log(
-      "Błąd logów:",
-      error.message
-    );
+    console.log("Błąd logu:", error.message);
   }
 }
 
@@ -205,166 +129,279 @@ function getTicketStaffRoles() {
 function memberCanManageTicket(member) {
   if (!member) return false;
 
-  return getTicketStaffRoles().some(
-    roleId => member.roles.cache.has(roleId)
+  if (member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+    return true;
+  }
+
+  return getTicketStaffRoles().some(roleId =>
+    member.roles.cache.has(roleId)
   );
 }
 
-// ======================================================
-// XP
-// ======================================================
-
-function getXPUser(userId) {
-  if (!xpData[userId]) {
-    xpData[userId] = {
-      xp: 0,
-      level: 1
-    };
-  }
-
-  return xpData[userId];
-}
-
-function xpNeeded(level) {
-  return level * 100;
-}
-
-async function addXP(message) {
-  if (!message.guild) return;
-  if (message.author.bot) return;
-
-  const userId = message.author.id;
-
-  if (xpCooldown.has(userId)) return;
-
-  xpCooldown.set(userId, true);
-
-  setTimeout(() => {
-    xpCooldown.delete(userId);
-  }, 60000);
-
-  const user = getXPUser(userId);
-
-  const amount =
-    Math.floor(Math.random() * 11) + 10;
-
-  user.xp += amount;
-
-  let levelUp = false;
-
-  while (
-    user.xp >= xpNeeded(user.level)
-  ) {
-    user.xp -= xpNeeded(user.level);
-    user.level++;
-    levelUp = true;
-  }
-
-  saveJSON(XP_FILE, xpData);
-
-  if (levelUp) {
-    await message.channel.send(
-      `🎉 ${message.author} awansował na **poziom ${user.level}**!`
-    );
-  }
-}
-
-// ======================================================
-// EKONOMIA
-// ======================================================
-
-function getMoney(userId) {
-  if (!economy[userId]) {
-    economy[userId] = {
-      money: 0,
-      daily: 0
-    };
-  }
-
-  return economy[userId];
-}
-
-function saveEconomy() {
-  saveJSON(
-    ECONOMY_FILE,
-    economy
-  );
-}
-
-// ======================================================
-// TICKETY
-// ======================================================
+// =====================================================
+// TICKET CATEGORIES
+// =====================================================
 
 const ticketCategories = {
   ticket_help: {
     label: "Pomoc z serwerem",
-    description:
-      "Problem z wejściem lub działaniem serwera",
+    description: "Problem z wejściem lub działaniem serwera",
     emoji: "🆘"
   },
 
   ticket_report: {
     label: "Zgłoszenie gracza",
-    description:
-      "Zgłoś gracza łamiącego regulamin",
+    description: "Zgłoś gracza łamiącego regulamin",
     emoji: "🚨"
   },
 
   ticket_media: {
     label: "Media / Twórca",
-    description:
-      "YouTube, TikTok, Twitch i inne",
+    description: "TikTok, YouTube, Twitch oraz ranga TWÓRCA",
     emoji: "🎥"
   },
 
   ticket_partner: {
     label: "Współpraca",
-    description:
-      "Propozycja współpracy",
+    description: "Propozycja współpracy",
     emoji: "🤝"
   },
 
   ticket_bug: {
     label: "Zgłoszenie błędu",
-    description:
-      "Znalazłeś błąd na serwerze",
+    description: "Znalazłeś błąd na serwerze",
     emoji: "🐛"
   },
 
   ticket_ban: {
     label: "Odwołanie od bana",
-    description:
-      "Odwołanie od nałożonej kary",
+    description: "Odwołanie od nałożonej kary",
     emoji: "⚖️"
   },
 
   ticket_other: {
     label: "Inna sprawa",
-    description:
-      "Pozostałe sprawy",
+    description: "Pozostałe sprawy",
     emoji: "📩"
   }
 };
 
-// ======================================================
-// KÓŁKO I KRZYŻYK
-// ======================================================
+// =====================================================
+// CREATE TICKET
+// =====================================================
 
-function getWinner(board) {
-  const combinations = [
+async function createTicket(interaction, categoryKey = "ticket_other") {
+  const guild = interaction.guild;
+  const user = interaction.user;
+
+  const existing = guild.channels.cache.find(
+    ch => ch.name === `ticket-${user.id}`
+  );
+
+  if (existing) {
+    return interaction.reply({
+      content: `❌ Masz już otwarty ticket: ${existing}`,
+      ephemeral: true
+    });
+  }
+
+  const ticketCategory = guild.channels.cache.get(config.TICKET_CATEGORY_ID);
+
+  if (!ticketCategory) {
+    return interaction.reply({
+      content:
+        "❌ Nie znaleziono kategorii ticketów. Sprawdź `TICKET_CATEGORY_ID` w config.js.",
+      ephemeral: true
+    });
+  }
+
+  if (ticketCategory.type !== ChannelType.GuildCategory) {
+    return interaction.reply({
+      content:
+        "❌ Podane `TICKET_CATEGORY_ID` nie wskazuje na kategorię Discord.",
+      ephemeral: true
+    });
+  }
+
+  const me = guild.members.me;
+
+  if (!me.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+    return interaction.reply({
+      content:
+        "❌ Bot nie ma uprawnienia **Zarządzanie kanałami**.",
+      ephemeral: true
+    });
+  }
+
+  const permissions = [
+    {
+      id: guild.roles.everyone.id,
+      deny: [
+        PermissionsBitField.Flags.ViewChannel
+      ]
+    },
+
+    {
+      id: user.id,
+      allow: [
+        PermissionsBitField.Flags.ViewChannel,
+        PermissionsBitField.Flags.SendMessages,
+        PermissionsBitField.Flags.ReadMessageHistory,
+        PermissionsBitField.Flags.AttachFiles
+      ]
+    }
+  ];
+
+  for (const roleId of getTicketStaffRoles()) {
+    permissions.push({
+      id: roleId,
+      allow: [
+        PermissionsBitField.Flags.ViewChannel,
+        PermissionsBitField.Flags.SendMessages,
+        PermissionsBitField.Flags.ReadMessageHistory,
+        PermissionsBitField.Flags.ManageMessages
+      ]
+    });
+  }
+
+  let channel;
+
+  try {
+    channel = await guild.channels.create({
+      name: `ticket-${user.id}`,
+      type: ChannelType.GuildText,
+      parent: ticketCategory.id,
+      topic: `Ticket użytkownika ${user.tag}`,
+      permissionOverwrites: permissions
+    });
+  } catch (error) {
+    console.error("Błąd tworzenia ticketu:", error);
+
+    return interaction.reply({
+      content:
+        "❌ Nie udało się utworzyć ticketu. Sprawdź uprawnienia bota i kategorię ticketów.",
+      ephemeral: true
+    });
+  }
+
+  const category = ticketCategories[categoryKey] || ticketCategories.ticket_other;
+
+  const embed = new EmbedBuilder()
+    .setColor(config.EMBED_COLOR)
+    .setTitle(`${category.emoji} ${category.label}`)
+    .setDescription(
+      `Witaj ${user}!\n\n` +
+      `**Kategoria:** ${category.label}\n\n` +
+      `Opisz dokładnie swoją sprawę. Administracja odpowie tak szybko, jak będzie to możliwe.\n\n` +
+      `📌 **Przy zgłoszeniu przygotuj:**\n` +
+      `• swój nick Minecraft\n` +
+      `• dokładny opis sprawy\n` +
+      `• screenshot/nagranie, jeśli jest potrzebne\n\n` +
+      `🔒 Nie oznaczaj całej administracji bez potrzeby.`
+    )
+    .setFooter({
+      text: "Ravexmc.pl • System ticketów"
+    })
+    .setTimestamp();
+
+  const buttons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("ticket_claim")
+      .setLabel("Przejmij ticket")
+      .setEmoji("👋")
+      .setStyle(ButtonStyle.Primary),
+
+    new ButtonBuilder()
+      .setCustomId("ticket_close")
+      .setLabel("Zamknij ticket")
+      .setEmoji("🔒")
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  await channel.send({
+    content: `${user} ${getTicketStaffRoles().map(id => `<@&${id}>`).join(" ")}`,
+    embeds: [embed],
+    components: [buttons]
+  });
+
+  await sendLog(
+    guild,
+    "🎫 Utworzono ticket",
+    `Użytkownik: ${user}\nKanał: ${channel}\nKategoria: ${category.label}`
+  );
+
+  return interaction.reply({
+    content: `✅ Ticket został utworzony: ${channel}`,
+    ephemeral: true
+  });
+}
+
+// =====================================================
+// VERIFICATION
+// =====================================================
+
+const verificationQuestions = new Map();
+
+function generateMathQuestion() {
+  const a = Math.floor(Math.random() * 10) + 1;
+  const b = Math.floor(Math.random() * 10) + 1;
+
+  return {
+    question: `${a} + ${b}`,
+    answer: a + b
+  };
+}
+
+// =====================================================
+// TIC TAC TOE
+// =====================================================
+
+const ticTacToeGames = new Map();
+
+function createTicTacToeBoard(game) {
+  const buttons = [];
+
+  for (let i = 0; i < 9; i++) {
+    const value = game.board[i] || "⬜";
+
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(`ttt_${game.id}_${i}`)
+        .setLabel(value === "⬜" ? " " : value)
+        .setEmoji(value === "❌" ? "❌" : value === "⭕" ? "⭕" : "⬜")
+        .setStyle(
+          value === "⬜"
+            ? ButtonStyle.Secondary
+            : value === "❌"
+              ? ButtonStyle.Danger
+              : ButtonStyle.Primary
+        )
+        .setDisabled(
+          value !== "⬜" || game.finished
+        )
+    );
+  }
+
+  return [
+    new ActionRowBuilder().addComponents(buttons.slice(0, 3)),
+    new ActionRowBuilder().addComponents(buttons.slice(3, 6)),
+    new ActionRowBuilder().addComponents(buttons.slice(6, 9))
+  ];
+}
+
+function checkTicTacToeWinner(board) {
+  const lines = [
     [0, 1, 2],
     [3, 4, 5],
     [6, 7, 8],
-
     [0, 3, 6],
     [1, 4, 7],
     [2, 5, 8],
-
     [0, 4, 8],
     [2, 4, 6]
   ];
 
-  for (const [a, b, c] of combinations) {
+  for (const [a, b, c] of lines) {
     if (
       board[a] &&
       board[a] === board[b] &&
@@ -374,2893 +411,2455 @@ function getWinner(board) {
     }
   }
 
+  if (board.every(Boolean)) {
+    return "DRAW";
+  }
+
   return null;
 }
 
-function createGameButtons(
-  gameId,
-  board,
-  disabled = false
-) {
-  const rows = [];
+// =====================================================
+// ROCK PAPER SCISSORS
+// =====================================================
 
-  for (let r = 0; r < 3; r++) {
-    const row =
-      new ActionRowBuilder();
+const rpsGames = new Map();
 
-    for (let c = 0; c < 3; c++) {
-      const index = r * 3 + c;
+const rpsChoices = {
+  rock: {
+    label: "Kamień",
+    emoji: "🪨"
+  },
 
-      const value = board[index];
+  paper: {
+    label: "Papier",
+    emoji: "📄"
+  },
 
-      const button =
-        new ButtonBuilder()
-          .setCustomId(
-            `ttt_${gameId}_${index}`
-          )
-          .setLabel(
-            value === "X"
-              ? "❌"
-              : value === "O"
-                ? "⭕"
-                : " "
-          )
-          .setDisabled(
-            disabled || Boolean(value)
-          );
+  scissors: {
+    label: "Nożyce",
+    emoji: "✂️"
+  }
+};
 
-      if (value === "X") {
-        button.setStyle(
-          ButtonStyle.Danger
-        );
-      } else if (value === "O") {
-        button.setStyle(
-          ButtonStyle.Primary
-        );
-      } else {
-        button.setStyle(
-          ButtonStyle.Secondary
-        );
-      }
+function rpsWinner(player, bot) {
+  if (player === bot) return "DRAW";
 
-      row.addComponents(button);
-    }
-
-    rows.push(row);
+  if (
+    (player === "rock" && bot === "scissors") ||
+    (player === "paper" && bot === "rock") ||
+    (player === "scissors" && bot === "paper")
+  ) {
+    return "PLAYER";
   }
 
-  return rows;
+  return "BOT";
 }
 
-async function deleteGame(gameId) {
-  const game =
-    ticTacToeGames.get(gameId);
+function rpsButtons(game) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`rps_${game.id}_rock`)
+      .setLabel("Kamień")
+      .setEmoji("🪨")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(game.finished),
 
-  if (!game) return;
+    new ButtonBuilder()
+      .setCustomId(`rps_${game.id}_paper`)
+      .setLabel("Papier")
+      .setEmoji("📄")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(game.finished),
 
-  ticTacToeGames.delete(gameId);
-
-  try {
-    const channel =
-      await client.channels.fetch(
-        game.channelId
-      );
-
-    const message =
-      await channel.messages.fetch(
-        game.messageId
-      );
-
-    await message.delete();
-  } catch {}
+    new ButtonBuilder()
+      .setCustomId(`rps_${game.id}_scissors`)
+      .setLabel("Nożyce")
+      .setEmoji("✂️")
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(game.finished)
+  );
 }
 
-// ======================================================
+// =====================================================
+// CONTESTS
+// =====================================================
+
+const contests = new Map();
+
+function parseDuration(input) {
+  const match = String(input)
+    .toLowerCase()
+    .trim()
+    .match(/^(\d+)\s*(s|m|h|d|w)$/);
+
+  if (!match) return null;
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+
+  const multipliers = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+    w: 7 * 24 * 60 * 60 * 1000
+  };
+
+  return amount * multipliers[unit];
+}
+
+async function finishContest(id) {
+  const contest = contests.get(id);
+
+  if (!contest || contest.finished) return;
+
+  contest.finished = true;
+
+  let winner = null;
+
+  if (contest.participants.size > 0) {
+    const users = [...contest.participants];
+    winner = users[Math.floor(Math.random() * users.length)];
+  }
+
+  const channel = await client.channels
+    .fetch(contest.channelId)
+    .catch(() => null);
+
+  if (!channel) {
+    contests.delete(id);
+    return;
+  }
+
+  const winnerText = winner
+    ? `<@${winner}>`
+    : "Brak uczestników";
+
+  const embed = new EmbedBuilder()
+    .setColor(0xf1c40f)
+    .setTitle("🏆 KONKURS ZAKOŃCZONY!")
+    .setDescription(
+      `Konkurs na nagrodę **${contest.prize}** właśnie się zakończył!\n\n` +
+      `👥 Uczestników: **${contest.participants.size}**\n` +
+      `🎁 Nagroda: **${contest.prize}**\n` +
+      `🏆 Zwycięzca: ${winnerText}`
+    )
+    .setFooter({
+      text: "Ravexmc.pl • Konkurs"
+    })
+    .setTimestamp();
+
+  await channel.messages
+    .fetch(contest.messageId)
+    .then(message => message.edit({
+      embeds: [embed],
+      components: []
+    }))
+    .catch(() => {});
+
+  if (winner) {
+    await channel.send(
+      `🎉 Gratulacje ${winner}! Wygrałeś/aś **${contest.prize}**!`
+    );
+  }
+
+  contests.delete(id);
+}
+
+// =====================================================
 // BACKUP
-// ======================================================
+// =====================================================
 
-async function createBackup(guild) {
+function createBackup(guild) {
+  const channels = guild.channels.cache
+    .filter(channel => channel.type !== ChannelType.GuildCategory)
+    .map(channel => ({
+      name: channel.name,
+      type: channel.type,
+      topic: channel.topic || null,
+      parentName: channel.parent?.name || null,
+      position: channel.rawPosition
+    }));
+
+  const categories = guild.channels.cache
+    .filter(channel => channel.type === ChannelType.GuildCategory)
+    .map(category => ({
+      name: category.name,
+      position: category.rawPosition
+    }));
+
   const backup = {
     guildId: guild.id,
     guildName: guild.name,
-    createdAt:
-      new Date().toISOString(),
-
-    roles: [],
-    channels: []
+    createdAt: new Date().toISOString(),
+    categories,
+    channels
   };
 
-  // ROLE
-  const roles =
-    [...guild.roles.cache.values()]
-      .filter(role =>
-        role.id !== guild.id
-      )
-      .sort(
-        (a, b) =>
-          a.position - b.position
-      );
-
-  for (const role of roles) {
-    backup.roles.push({
-      name: role.name,
-      color: role.hexColor,
-      hoist: role.hoist,
-      mentionable: role.mentionable,
-      permissions:
-        role.permissions.bitfield.toString(),
-      position: role.position
-    });
-  }
-
-  // KANAŁY
-  const channels =
-    [...guild.channels.cache.values()]
-      .sort(
-        (a, b) =>
-          a.rawPosition - b.rawPosition
-      );
-
-  for (const channel of channels) {
-    backup.channels.push({
-      name: channel.name,
-      type: channel.type,
-      parentId: channel.parentId || null,
-      position: channel.rawPosition,
-      topic: channel.topic || null,
-      nsfw: channel.nsfw || false,
-      rateLimitPerUser:
-        channel.rateLimitPerUser || 0
-    });
-  }
-
-  fs.writeFileSync(
-    BACKUP_FILE,
-    JSON.stringify(
-      backup,
-      null,
-      2
-    )
-  );
+  saveJSON(backupFile, backup);
 
   return backup;
 }
 
-// ======================================================
-// RESTORE BACKUP
-// ======================================================
-
-async function restoreBackup(guild) {
-  if (!fs.existsSync(BACKUP_FILE)) {
-    throw new Error(
-      "Nie znaleziono backupu."
-    );
-  }
-
-  const backup =
-    JSON.parse(
-      fs.readFileSync(
-        BACKUP_FILE,
-        "utf8"
-      )
-    );
-
-  // TWORZENIE RÓL
-  for (const role of backup.roles) {
-    const exists =
-      guild.roles.cache.find(
-        r => r.name === role.name
-      );
-
-    if (exists) continue;
-
-    try {
-      await guild.roles.create({
-        name: role.name,
-        color:
-          role.color === "#000000"
-            ? undefined
-            : role.color,
-        hoist: role.hoist,
-        mentionable:
-          role.mentionable,
-        permissions:
-          BigInt(role.permissions)
-      });
-    } catch {}
-  }
-
-  // KATEGORIE
-  const categoryMap = {};
-
-  for (const channel of backup.channels) {
-    if (
-      channel.type !==
-      ChannelType.GuildCategory
-    ) {
-      continue;
-    }
-
-    const exists =
-      guild.channels.cache.find(
-        c =>
-          c.name === channel.name &&
-          c.type ===
-            ChannelType.GuildCategory
-      );
-
-    if (exists) {
-      categoryMap[channel.name] =
-        exists.id;
-
-      continue;
-    }
-
-    try {
-      const created =
-        await guild.channels.create({
-          name: channel.name,
-          type:
-            ChannelType.GuildCategory
-        });
-
-      categoryMap[channel.name] =
-        created.id;
-    } catch {}
-  }
-
-  // POZOSTAŁE KANAŁY
-  for (const channel of backup.channels) {
-    if (
-      channel.type ===
-      ChannelType.GuildCategory
-    ) {
-      continue;
-    }
-
-    const exists =
-      guild.channels.cache.find(
-        c =>
-          c.name === channel.name
-      );
-
-    if (exists) continue;
-
-    let parent = null;
-
-    if (channel.parentId) {
-      const oldParent =
-        backup.channels.find(
-          c =>
-            c.type ===
-              ChannelType.GuildCategory &&
-            c.name ===
-              backup.channels.find(
-                x =>
-                  x.type ===
-                    ChannelType.GuildCategory &&
-                  x.id ===
-                    channel.parentId
-              )?.name
-        );
-
-      if (oldParent) {
-        parent =
-          categoryMap[
-            oldParent.name
-          ] || null;
-      }
-    }
-
-    try {
-      await guild.channels.create({
-        name: channel.name,
-        type: channel.type,
-        parent,
-        topic: channel.topic || undefined,
-        nsfw: channel.nsfw,
-        rateLimitPerUser:
-          channel.rateLimitPerUser
-      });
-    } catch {}
-  }
-
-  return backup;
-}
-
-// ======================================================
-// KOMENDY
-// ======================================================
+// =====================================================
+// COMMANDS
+// =====================================================
 
 const commands = [
 
+  // ---------------- WERYFIKACJA ----------------
+
   new SlashCommandBuilder()
     .setName("weryfikacja")
-    .setDescription(
-      "Wyślij panel weryfikacji"
-    ),
+    .setDescription("Zweryfikuj swoje konto na serwerze"),
+
+  // ---------------- TICKET ----------------
 
   new SlashCommandBuilder()
     .setName("ticket")
-    .setDescription(
-      "Wyślij panel ticketów"
-    ),
+    .setDescription("Wyślij panel ticketów"),
+
+  // ---------------- MEDIA ----------------
 
   new SlashCommandBuilder()
-    .setName("kolkoikrzyzyk")
-    .setDescription(
-      "Wyzwij gracza do gry w kółko i krzyżyk"
-    )
-    .addUserOption(option =>
+    .setName("media")
+    .setDescription("Informacje o randze MEDIA i TWÓRCA"),
+
+  // ---------------- REGULAMINY ----------------
+
+  new SlashCommandBuilder()
+    .setName("regulamin")
+    .setDescription("Wyświetl regulamin serwera Minecraft"),
+
+  new SlashCommandBuilder()
+    .setName("regulamindiscord")
+    .setDescription("Wyświetl regulamin Discorda"),
+
+  // ---------------- REKRUTACJA ----------------
+
+  new SlashCommandBuilder()
+    .setName("rekrutacja")
+    .setDescription("Wyślij panel rekrutacyjny"),
+
+  // ---------------- KONKURS ----------------
+
+  new SlashCommandBuilder()
+    .setName("konkurs")
+    .setDescription("Stwórz konkurs")
+    .addStringOption(option =>
       option
-        .setName("wyzwij")
-        .setDescription(
-          "Wybierz przeciwnika"
-        )
+        .setName("nagroda")
+        .setDescription("Nagroda w konkursie")
         .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("profil")
-    .setDescription(
-      "Wyświetl swój profil"
-    )
-    .addUserOption(option =>
-      option
-        .setName("uzytkownik")
-        .setDescription(
-          "Opcjonalnie wybierz użytkownika"
-        )
-        .setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("bal")
-    .setDescription(
-      "Sprawdź swoje saldo"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("daily")
-    .setDescription(
-      "Odbierz codzienną nagrodę"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("pay")
-    .setDescription(
-      "Przelej pieniądze"
-    )
-    .addUserOption(option =>
-      option
-        .setName("uzytkownik")
-        .setDescription(
-          "Odbiorca"
-        )
-        .setRequired(true)
-    )
-    .addIntegerOption(option =>
-      option
-        .setName("kwota")
-        .setDescription(
-          "Kwota"
-        )
-        .setRequired(true)
-        .setMinValue(1)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("moneta")
-    .setDescription(
-      "Rzut monetą"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("kostka")
-    .setDescription(
-      "Rzut kostką"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("kamienpapiernozyce")
-    .setDescription(
-      "Zagraj w kamień papier nożyce"
     )
     .addStringOption(option =>
       option
-        .setName("wybor")
-        .setDescription(
-          "Twój wybór"
-        )
+        .setName("czas")
+        .setDescription("Czas, np. 30m, 2h, 7d")
         .setRequired(true)
-        .addChoices(
-          {
-            name: "🪨 Kamień",
-            value: "kamien"
-          },
-          {
-            name: "📄 Papier",
-            value: "papier"
-          },
-          {
-            name: "✂️ Nożyce",
-            value: "nozyce"
-          }
-        )
     ),
+
+  // ---------------- TTT ----------------
+
+  new SlashCommandBuilder()
+    .setName("kolkoikrzyzyk")
+    .setDescription("Zagraj w kółko i krzyżyk")
+    .addUserOption(option =>
+      option
+        .setName("przeciwnik")
+        .setDescription("Osoba, z którą chcesz zagrać")
+        .setRequired(true)
+    ),
+
+  // ---------------- RPS ----------------
+
+  new SlashCommandBuilder()
+    .setName("kamienpapiernozyce")
+    .setDescription("Zagraj w kamień, papier, nożyce — 3 rundy"),
+
+  // ---------------- MODERACJA ----------------
 
   new SlashCommandBuilder()
     .setName("clear")
-    .setDescription(
-      "Usuń wiadomości"
-    )
+    .setDescription("Usuń wiadomości")
     .addIntegerOption(option =>
       option
         .setName("ilosc")
-        .setDescription(
-          "Ilość wiadomości"
-        )
-        .setRequired(true)
+        .setDescription("Ile wiadomości usunąć")
         .setMinValue(1)
         .setMaxValue(100)
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("ban")
-    .setDescription(
-      "Zbanuj użytkownika"
-    )
+    .setDescription("Zbanuj użytkownika")
     .addUserOption(option =>
       option
         .setName("uzytkownik")
-        .setDescription(
-          "Użytkownik"
-        )
+        .setDescription("Użytkownik")
         .setRequired(true)
     )
     .addStringOption(option =>
       option
         .setName("powod")
-        .setDescription(
-          "Powód"
-        )
+        .setDescription("Powód bana")
         .setRequired(false)
     ),
 
   new SlashCommandBuilder()
     .setName("kick")
-    .setDescription(
-      "Wyrzuć użytkownika"
-    )
+    .setDescription("Wyrzuć użytkownika")
     .addUserOption(option =>
       option
         .setName("uzytkownik")
-        .setDescription(
-          "Użytkownik"
-        )
+        .setDescription("Użytkownik")
         .setRequired(true)
     )
     .addStringOption(option =>
       option
         .setName("powod")
-        .setDescription(
-          "Powód"
-        )
+        .setDescription("Powód")
         .setRequired(false)
     ),
 
   new SlashCommandBuilder()
     .setName("mute")
-    .setDescription(
-      "Wycisz użytkownika"
-    )
+    .setDescription("Wycisz użytkownika")
     .addUserOption(option =>
       option
         .setName("uzytkownik")
-        .setDescription(
-          "Użytkownik"
-        )
+        .setDescription("Użytkownik")
         .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("unmute")
-    .setDescription(
-      "Zdejmij wyciszenie"
-    )
+    .setDescription("Zdejmij wyciszenie")
     .addUserOption(option =>
       option
         .setName("uzytkownik")
-        .setDescription(
-          "Użytkownik"
-        )
+        .setDescription("Użytkownik")
         .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("say")
-    .setDescription(
-      "Wyślij wiadomość jako bot"
-    )
+    .setDescription("Bot wysyła wiadomość")
     .addStringOption(option =>
       option
         .setName("tekst")
-        .setDescription(
-          "Treść"
-        )
+        .setDescription("Treść wiadomości")
         .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("serverinfo")
-    .setDescription(
-      "Informacje o serwerze"
-    ),
+    .setDescription("Informacje o serwerze"),
 
-  new SlashCommandBuilder()
-    .setName("backup")
-    .setDescription(
-      "Przywróć ostatni backup"
-    ),
+  // ---------------- BACKUP ----------------
 
   new SlashCommandBuilder()
     .setName("zapisz")
-    .setDescription(
-      "Zapisz backup serwera"
-    ),
+    .setDescription("Utwórz backup serwera"),
+
+  new SlashCommandBuilder()
+    .setName("backup")
+    .setDescription("Wyślij ostatni backup serwera"),
 
   new SlashCommandBuilder()
     .setName("usun-kanaly")
-    .setDescription(
-      "Usuń wszystkie kanały"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("rekrutacja")
-    .setDescription(
-      "Wyślij panel rekrutacyjny"
-    )
+    .setDescription("Usuń wszystkie kanały po wykonaniu backupu")
 ];
 
-// ======================================================
+// =====================================================
 // READY
-// ======================================================
+// =====================================================
 
-client.once(
-  Events.ClientReady,
-  async () => {
+client.once(Events.ClientReady, async readyClient => {
+  console.log(`Zalogowano jako ${readyClient.user.tag}`);
 
-    console.log(
-      `Zalogowano jako ${client.user.tag}`
+  try {
+    const guild = readyClient.guilds.cache.get(config.GUILD_ID);
+
+    if (!guild) {
+      console.log(
+        "Nie znaleziono GUILD_ID. Sprawdź src/config.js."
+      );
+      return;
+    }
+
+    await guild.commands.set(
+      commands.map(command => command.toJSON())
     );
 
-    try {
-      const guild =
-        await client.guilds.fetch(
-          config.GUILD_ID
-        );
-
-      await guild.commands.set(
-        commands.map(
-          command =>
-            command.toJSON()
-        )
-      );
-
-      console.log(
-        "Komendy slash zostały zarejestrowane."
-      );
-
-    } catch (error) {
-      console.error(
-        "Błąd rejestracji:",
-        error
-      );
-    }
+    console.log("Komendy slash zostały zarejestrowane.");
+  } catch (error) {
+    console.error(
+      "Błąd rejestracji komend:",
+      error
+    );
   }
-);
+});
 
-// ======================================================
-// MEMBER ADD
-// ======================================================
+// =====================================================
+// WELCOME
+// =====================================================
 
-client.on(
-  Events.GuildMemberAdd,
-  async member => {
+client.on(Events.GuildMemberAdd, async member => {
+  try {
+    if (!isConfigured(config.WELCOME_CHANNEL_ID)) return;
 
-    // ANTY BOT
-    if (member.user.bot) {
+    const channel = member.guild.channels.cache.get(
+      config.WELCOME_CHANNEL_ID
+    );
 
-      setTimeout(
-        async () => {
+    if (!channel) return;
 
-          try {
+    const embed = new EmbedBuilder()
+      .setColor(config.EMBED_COLOR)
+      .setTitle("👋 Witaj na Ravexmc.pl!")
+      .setDescription(
+        `Witaj ${member}!\n\n` +
+        `Miło Cię widzieć na naszym serwerze Minecraft! 🎮\n\n` +
+        `🔐 Nie zapomnij przejść weryfikacji.\n` +
+        `📜 Zapoznaj się z regulaminem.\n` +
+        `🎫 Jeśli potrzebujesz pomocy — utwórz ticket.`
+      )
+      .setThumbnail(member.user.displayAvatarURL())
+      .setFooter({
+        text: "Ravexmc.pl"
+      })
+      .setTimestamp();
 
-            const logs =
-              await member.guild.fetchAuditLogs({
-                type:
-                  AuditLogEvent.BotAdd,
-                limit: 10
-              });
+    await channel.send({
+      embeds: [embed]
+    });
 
-            const entry =
-              logs.entries.find(
-                log =>
-                  log.target?.id ===
-                  member.id
-              );
+    await sendLog(
+      member.guild,
+      "👋 Nowy użytkownik",
+      `${member.user.tag} dołączył na serwer.`
+    );
+  } catch (error) {
+    console.log("Błąd welcome:", error.message);
+  }
+});
 
-            const executor =
-              entry?.executor;
+// =====================================================
+// LEAVE
+// =====================================================
 
-            if (!executor) return;
+client.on(Events.GuildMemberRemove, async member => {
+  await sendLog(
+    member.guild,
+    "📤 Użytkownik opuścił serwer",
+    `${member.user.tag} opuścił serwer.`
+  );
+});
 
-            if (
-              executor.id ===
-                config.OWNER_ID &&
-              executor.id ===
-                member.guild.ownerId
-            ) {
+// =====================================================
+// MESSAGE DELETE LOG
+// =====================================================
 
-              await sendLog(
-                member.guild,
-                "🤖 Bot dodany",
-                `Bot **${member.user.tag}** został dodany przez właściciela.`
-              );
+client.on(Events.MessageDelete, async message => {
+  if (!message.guild) return;
 
-              return;
-            }
+  const author = message.author
+    ? message.author.tag
+    : "Nieznany użytkownik";
 
-            await sendLog(
-              member.guild,
-              "🚨 ANTY-BOT",
-              `Wykryto próbę dodania obcego bota.\n\n` +
-              `Bot: **${member.user.tag}**\n` +
-              `Dodał: <@${executor.id}>`
-            );
+  const content = message.content
+    ? message.content.slice(0, 1000)
+    : "Brak treści";
 
-            await member.kick(
-              "Anti-Bot: bot dodany przez osobę inną niż właściciel"
-            ).catch(() => {});
+  await sendLog(
+    message.guild,
+    "🗑️ Usunięto wiadomość",
+    `**Autor:** ${author}\n**Kanał:** ${message.channel}\n**Treść:** ${content}`,
+    0xe74c3c
+  );
+});
 
-          } catch (error) {
-            console.log(
-              "Anti-Bot:",
-              error.message
-            );
-          }
+// =====================================================
+// ANTI BOT
+// =====================================================
 
-        },
-        1500
+client.on(Events.GuildMemberAdd, async member => {
+  if (!member.user.bot) return;
+
+  try {
+    const logs = await member.guild.fetchAuditLogs({
+      type: 28,
+      limit: 5
+    });
+
+    const entry = logs.entries.find(
+      entry => entry.target?.id === member.id
+    );
+
+    if (!entry) return;
+
+    if (entry.executor?.id === config.OWNER_ID) {
+      await sendLog(
+        member.guild,
+        "🤖 Bot dodany",
+        `Bot ${member.user.tag} został dodany przez właściciela.`
       );
 
       return;
     }
 
-    // POWITANIE
-    const channel =
-      member.guild.channels.cache.get(
-        config.WELCOME_CHANNEL_ID
+    if (
+      member.guild.members.me.permissions.has(
+        PermissionsBitField.Flags.KickMembers
+      )
+    ) {
+      await member.kick(
+        "Nieautoryzowany bot — automatyczna ochrona"
       );
 
-    if (!channel) return;
-
-    const embed =
-      new EmbedBuilder()
-        .setColor(
-          config.EMBED_COLOR
-        )
-        .setTitle(
-          "👋 Witamy na serwerze!"
-        )
-        .setDescription(
-          `Witaj ${member}!\n\n` +
-          `Miło Cię widzieć na **${member.guild.name}**.\n` +
-          `Przejdź weryfikację, aby uzyskać dostęp do serwera.`
-        )
-        .setThumbnail(
-          member.user.displayAvatarURL()
-        )
-        .setTimestamp();
-
-    await channel.send({
-      embeds: [embed]
-    }).catch(() => {});
-  }
-);
-
-// ======================================================
-// SPAM + XP
-// ======================================================
-
-client.on(
-  Events.MessageCreate,
-  async message => {
-
-    if (!message.guild) return;
-    if (message.author.bot) return;
-
-    await addXP(message);
-
-    const content =
-      message.content
-        .trim()
-        .toLowerCase();
-
-    if (!content) return;
-
-    const key =
-      `${message.author.id}:${content}`;
-
-    const count =
-      (spamCounter.get(key) || 0) + 1;
-
-    spamCounter.set(
-      key,
-      count
-    );
-
-    setTimeout(
-      () =>
-        spamCounter.delete(key),
-      15000
-    );
-
-    if (count >= 5) {
-
-      spamCounter.delete(key);
-
-      try {
-
-        await message.member.timeout(
-          60000,
-          "Automatyczny anty-spam"
-        );
-
-        await message.channel.send(
-          `⚠️ ${message.author}, zostałeś wyciszony za spam.`
-        );
-
-      } catch {}
+      await sendLog(
+        member.guild,
+        "🛡️ Zablokowano bota",
+        `Bot ${member.user.tag} został usunięty.\nDodający: ${entry.executor?.tag || "Nieznany"}`,
+        0xe74c3c
+      );
     }
+  } catch (error) {
+    console.log("Anti-bot:", error.message);
   }
-);
+});
 
-// ======================================================
+// =====================================================
 // INTERACTIONS
-// ======================================================
+// =====================================================
 
-client.on(
-  Events.InteractionCreate,
-  async interaction => {
+client.on(Events.InteractionCreate, async interaction => {
+  try {
 
-    try {
+    // =================================================
+    // SLASH COMMANDS
+    // =================================================
 
-      // ==================================================
-      // SLASH COMMANDS
-      // ==================================================
+    if (interaction.isChatInputCommand()) {
 
-      if (
-        interaction.isChatInputCommand()
-      ) {
+      // -----------------------------------------------
+      // WERYFIKACJA
+      // -----------------------------------------------
 
-        // ==================================================
-        // KÓŁKO I KRZYŻYK
-        // ==================================================
+      if (interaction.commandName === "weryfikacja") {
 
-        if (
-          interaction.commandName ===
-          "kolkoikrzyzyk"
-        ) {
-
-          const opponent =
-            interaction.options.getUser(
-              "wyzwij"
-            );
-
-          if (
-            opponent.bot
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Nie możesz wyzwać bota.",
-              ephemeral: true
-            });
-          }
-
-          if (
-            opponent.id ===
-            interaction.user.id
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Nie możesz grać sam ze sobą.",
-              ephemeral: true
-            });
-          }
-
-          const gameId =
-            `${Date.now()}_${interaction.user.id}`;
-
-          const game = {
-            playerX:
-              interaction.user.id,
-
-            playerO:
-              opponent.id,
-
-            board:
-              Array(9).fill(null),
-
-            turn:
-              interaction.user.id,
-
-            channelId:
-              interaction.channel.id,
-
-            messageId:
-              null
-          };
-
-          const embed =
-            new EmbedBuilder()
-              .setColor(
-                config.EMBED_COLOR
-              )
-              .setTitle(
-                "⭕ Kółko i krzyżyk ❌"
-              )
-              .setDescription(
-                `❌ <@${game.playerX}>\n` +
-                `⭕ <@${game.playerO}>\n\n` +
-                `🎮 Teraz ruch ma <@${game.turn}>\n\n` +
-                `⏱️ Gra zostanie automatycznie usunięta po **10 minutach**.`
-              );
-
-          await interaction.reply({
-            embeds: [embed],
-            components:
-              createGameButtons(
-                gameId,
-                game.board
-              )
-          });
-
-          const message =
-            await interaction.fetchReply();
-
-          game.messageId =
-            message.id;
-
-          ticTacToeGames.set(
-            gameId,
-            game
-          );
-
-          setTimeout(
-            () =>
-              deleteGame(gameId),
-            10 * 60 * 1000
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // TICKETY
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "ticket"
-        ) {
-
-          const embed =
-            new EmbedBuilder()
-              .setColor(
-                config.EMBED_COLOR
-              )
-              .setTitle(
-                "🎫 CENTRUM POMOCY"
-              )
-              .setDescription(
-                `Potrzebujesz pomocy administracji?\n\n` +
-                `Kliknij poniższe menu i wybierz odpowiednią kategorię.\n\n` +
-                `📌 **Wybierz kategorię pomocy**`
-              )
-              .setFooter({
-                text:
-                  "Centrum Pomocy • Administracja"
-              })
-              .setTimestamp();
-
-          const menu =
-            new StringSelectMenuBuilder()
-              .setCustomId(
-                "ticket_category_select"
-              )
-              .setPlaceholder(
-                "📂 Wybierz kategorię pomocy"
-              )
-              .addOptions(
-                Object.entries(
-                  ticketCategories
-                ).map(
-                  ([value, data]) => ({
-                    label:
-                      data.label,
-
-                    description:
-                      data.description,
-
-                    value,
-
-                    emoji:
-                      data.emoji
-                  })
-                )
-              );
-
-          const row =
-            new ActionRowBuilder()
-              .addComponents(menu);
-
-          await interaction.reply({
-            embeds: [embed],
-            components: [row]
-          });
-
-          return;
-        }
-
-        // ==================================================
-        // PROFIL
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "profil"
-        ) {
-
-          const user =
-            interaction.options.getUser(
-              "uzytkownik"
-            ) ||
-            interaction.user;
-
-          const data =
-            getXPUser(user.id);
-
-          const money =
-            getMoney(user.id);
-
-          const embed =
-            new EmbedBuilder()
-              .setColor(
-                config.EMBED_COLOR
-              )
-              .setTitle(
-                `👤 Profil ${user.username}`
-              )
-              .setThumbnail(
-                user.displayAvatarURL()
-              )
-              .addFields(
-                {
-                  name: "📊 Poziom",
-                  value:
-                    `${data.level}`,
-                  inline: true
-                },
-                {
-                  name: "⭐ XP",
-                  value:
-                    `${data.xp}/${xpNeeded(data.level)}`,
-                  inline: true
-                },
-                {
-                  name: "💰 Saldo",
-                  value:
-                    `${money.money} monet`,
-                  inline: true
-                }
-              );
-
-          await interaction.reply({
-            embeds: [embed]
-          });
-
-          return;
-        }
-
-        // ==================================================
-        // BAL
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "bal"
-        ) {
-
-          const data =
-            getMoney(
-              interaction.user.id
-            );
-
-          await interaction.reply(
-            `💰 Masz **${data.money} monet**.`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // DAILY
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "daily"
-        ) {
-
-          const data =
-            getMoney(
-              interaction.user.id
-            );
-
-          const now =
-            Date.now();
-
-          if (
-            data.daily &&
-            now - data.daily <
-              24 * 60 * 60 * 1000
-          ) {
-
-            const remaining =
-              24 * 60 * 60 * 1000 -
-              (now - data.daily);
-
-            const hours =
-              Math.ceil(
-                remaining /
-                  1000 /
-                  60 /
-                  60
-              );
-
-            return interaction.reply({
-              content:
-                `⏳ Daily możesz odebrać za około **${hours}h**.`,
-              ephemeral: true
-            });
-          }
-
-          data.money += 500;
-          data.daily = now;
-
-          saveEconomy();
-
-          await interaction.reply(
-            "🎁 Otrzymujesz **500 monet** za daily!"
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // PAY
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "pay"
-        ) {
-
-          const target =
-            interaction.options.getUser(
-              "uzytkownik"
-            );
-
-          const amount =
-            interaction.options.getInteger(
-              "kwota"
-            );
-
-          if (
-            target.bot ||
-            target.id ===
-              interaction.user.id
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Nie możesz przelać pieniędzy tej osobie.",
-              ephemeral: true
-            });
-          }
-
-          const sender =
-            getMoney(
-              interaction.user.id
-            );
-
-          if (
-            sender.money < amount
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Nie masz wystarczającej ilości monet.",
-              ephemeral: true
-            });
-          }
-
-          const receiver =
-            getMoney(
-              target.id
-            );
-
-          sender.money -= amount;
-          receiver.money += amount;
-
-          saveEconomy();
-
-          await interaction.reply(
-            `💸 Przelano **${amount} monet** użytkownikowi ${target}.`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // MONETA
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "moneta"
-        ) {
-
-          const result =
-            Math.random() < 0.5
-              ? "🪙 ORZEŁ"
-              : "🪙 RESZKA";
-
-          await interaction.reply(
-            `🎲 Wypadło: **${result}**`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // KOSTKA
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "kostka"
-        ) {
-
-          const result =
-            Math.floor(
-              Math.random() * 6
-            ) + 1;
-
-          await interaction.reply(
-            `🎲 Wyrzuciłeś **${result}**!`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // KAMIEN PAPIER NOZYCE
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "kamienpapiernozyce"
-        ) {
-
-          const player =
-            interaction.options.getString(
-              "wybor"
-            );
-
-          const choices = [
-            "kamien",
-            "papier",
-            "nozyce"
-          ];
-
-          const bot =
-            choices[
-              Math.floor(
-                Math.random() *
-                  choices.length
-              )
-            ];
-
-          const names = {
-            kamien: "🪨 Kamień",
-            papier: "📄 Papier",
-            nozyce: "✂️ Nożyce"
-          };
-
-          let result;
-
-          if (player === bot) {
-            result = "🤝 Remis!";
-          } else if (
-            (
-              player === "kamien" &&
-              bot === "nozyce"
-            ) ||
-            (
-              player === "papier" &&
-              bot === "kamien"
-            ) ||
-            (
-              player === "nozyce" &&
-              bot === "papier"
-            )
-          ) {
-            result = "🏆 Wygrywasz!";
-          } else {
-            result = "❌ Przegrywasz!";
-          }
-
-          await interaction.reply(
-            `Ty: **${names[player]}**\n` +
-            `Bot: **${names[bot]}**\n\n` +
-            `**${result}**`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // CLEAR
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "clear"
-        ) {
-
-          if (
-            !interaction.member.permissions.has(
-              PermissionsBitField.Flags.ManageMessages
-            )
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Nie masz uprawnień.",
-              ephemeral: true
-            });
-          }
-
-          const amount =
-            interaction.options.getInteger(
-              "ilosc"
-            );
-
-          const deleted =
-            await interaction.channel.bulkDelete(
-              amount,
-              true
-            );
-
-          await interaction.reply({
+        if (!isConfigured(config.VERIFIED_ROLE_ID)) {
+          return interaction.reply({
             content:
-              `🗑️ Usunięto **${deleted.size}** wiadomości.`,
+              "❌ Nie ustawiono `VERIFIED_ROLE_ID` w config.js.",
             ephemeral: true
           });
-
-          return;
         }
 
-        // ==================================================
-        // BAN
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "ban"
-        ) {
-
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Tylko właściciel może używać tej komendy.",
-              ephemeral: true
-            });
-          }
-
-          const user =
-            interaction.options.getUser(
-              "uzytkownik"
-            );
-
-          const reason =
-            interaction.options.getString(
-              "powod"
-            ) ||
-            "Brak powodu";
-
-          const member =
-            await interaction.guild.members.fetch(
-              user.id
-            ).catch(() => null);
-
-          if (!member) {
-            return interaction.reply({
-              content:
-                "❌ Nie znaleziono użytkownika.",
-              ephemeral: true
-            });
-          }
-
-          await member.ban({
-            reason
-          });
-
-          await interaction.reply(
-            `🔨 Zbanowano **${user.tag}**.\nPowód: **${reason}**`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // KICK
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "kick"
-        ) {
-
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Tylko właściciel może używać tej komendy.",
-              ephemeral: true
-            });
-          }
-
-          const user =
-            interaction.options.getUser(
-              "uzytkownik"
-            );
-
-          const member =
-            await interaction.guild.members.fetch(
-              user.id
-            ).catch(() => null);
-
-          if (!member) {
-            return interaction.reply({
-              content:
-                "❌ Nie znaleziono użytkownika.",
-              ephemeral: true
-            });
-          }
-
-          await member.kick(
-            "Kick przez właściciela"
-          );
-
-          await interaction.reply(
-            `👢 Wyrzucono **${user.tag}**.`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // MUTE
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "mute"
-        ) {
-
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Tylko właściciel może używać tej komendy.",
-              ephemeral: true
-            });
-          }
-
-          const user =
-            interaction.options.getUser(
-              "uzytkownik"
-            );
-
-          const member =
-            await interaction.guild.members.fetch(
-              user.id
-            ).catch(() => null);
-
-          if (!member) {
-            return interaction.reply({
-              content:
-                "❌ Nie znaleziono użytkownika.",
-              ephemeral: true
-            });
-          }
-
-          await member.timeout(
-            10 * 60 * 1000,
-            "Mute 10 minut"
-          );
-
-          await interaction.reply(
-            `🔇 Wyciszono **${user.tag}** na 10 minut.`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // UNMUTE
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "unmute"
-        ) {
-
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Tylko właściciel może używać tej komendy.",
-              ephemeral: true
-            });
-          }
-
-          const user =
-            interaction.options.getUser(
-              "uzytkownik"
-            );
-
-          const member =
-            await interaction.guild.members.fetch(
-              user.id
-            ).catch(() => null);
-
-          if (!member) {
-            return interaction.reply({
-              content:
-                "❌ Nie znaleziono użytkownika.",
-              ephemeral: true
-            });
-          }
-
-          await member.timeout(null);
-
-          await interaction.reply(
-            `🔊 Zdjęto wyciszenie z **${user.tag}**.`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // SAY
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "say"
-        ) {
-
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Tylko właściciel może używać tej komendy.",
-              ephemeral: true
-            });
-          }
-
-          const text =
-            interaction.options.getString(
-              "tekst"
-            );
-
-          await interaction.reply({
-            content:
-              "✅ Wysłano.",
-            ephemeral: true
-          });
-
-          await interaction.channel.send(
-            text
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // SERVERINFO
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "serverinfo"
-        ) {
-
-          const guild =
-            interaction.guild;
-
-          const embed =
-            new EmbedBuilder()
-              .setColor(
-                config.EMBED_COLOR
-              )
-              .setTitle(
-                `📊 ${guild.name}`
-              )
-              .addFields(
-                {
-                  name:
-                    "👑 Właściciel",
-                  value:
-                    `<@${guild.ownerId}>`,
-                  inline: true
-                },
-                {
-                  name:
-                    "👥 Członkowie",
-                  value:
-                    `${guild.memberCount}`,
-                  inline: true
-                },
-                {
-                  name:
-                    "💬 Kanały",
-                  value:
-                    `${guild.channels.cache.size}`,
-                  inline: true
-                },
-                {
-                  name:
-                    "🏷️ Role",
-                  value:
-                    `${guild.roles.cache.size}`,
-                  inline: true
-                }
-              )
-              .setThumbnail(
-                guild.iconURL()
-              )
-              .setTimestamp();
-
-          await interaction.reply({
-            embeds: [embed]
-          });
-
-          return;
-        }
-
-        // ==================================================
-        // ZAPISZ
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "zapisz"
-        ) {
-
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "🚫 Tylko właściciel może tworzyć backup.",
-              ephemeral: true
-            });
-          }
-
-          await interaction.deferReply({
-            ephemeral: true
-          });
-
-          const backup =
-            await createBackup(
-              interaction.guild
-            );
-
-          await interaction.editReply(
-            `💾 **Backup zapisany!**\n\n` +
-            `📁 Kategorie i kanały: **${backup.channels.length}**\n` +
-            `🏷️ Role: **${backup.roles.length}**\n\n` +
-            `📅 ${new Date().toLocaleString("pl-PL")}`
-          );
-
-          await sendLog(
-            interaction.guild,
-            "💾 Utworzono backup",
-            `Backup został utworzony przez ${interaction.user}.`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // BACKUP / RESTORE
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "backup"
-        ) {
-
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "🚫 Tylko właściciel może przywrócić backup.",
-              ephemeral: true
-            });
-          }
-
-          if (
-            !fs.existsSync(
-              BACKUP_FILE
-            )
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Nie ma jeszcze zapisanego backupu. Najpierw użyj `/zapisz`.",
-              ephemeral: true
-            });
-          }
-
-          const row =
-            new ActionRowBuilder()
-              .addComponents(
-                new ButtonBuilder()
-                  .setCustomId(
-                    "restore_backup"
-                  )
-                  .setLabel(
-                    "Przywróć backup"
-                  )
-                  .setEmoji("♻️")
-                  .setStyle(
-                    ButtonStyle.Success
-                  ),
-
-                new ButtonBuilder()
-                  .setCustomId(
-                    "cancel_restore"
-                  )
-                  .setLabel(
-                    "Anuluj"
-                  )
-                  .setStyle(
-                    ButtonStyle.Secondary
-                  )
-              );
-
-          await interaction.reply({
-            content:
-              "♻️ **Przywracanie backupu**\n\n" +
-              "Bot spróbuje odtworzyć zapisane role, kategorie i kanały.\n\n" +
-              "⚠️ Istniejące elementy nie zostaną usunięte.",
-            components: [row],
-            ephemeral: true
-          });
-
-          return;
-        }
-
-        // ==================================================
-        // USUŃ KANAŁY
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "usun-kanaly"
-        ) {
-
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "🚫 Tylko właściciel może używać tej komendy.",
-              ephemeral: true
-            });
-          }
-
-          const row =
-            new ActionRowBuilder()
-              .addComponents(
-                new ButtonBuilder()
-                  .setCustomId(
-                    "confirm_delete_channels"
-                  )
-                  .setLabel(
-                    "USUŃ WSZYSTKIE KANAŁY"
-                  )
-                  .setEmoji("🗑️")
-                  .setStyle(
-                    ButtonStyle.Danger
-                  ),
-
-                new ButtonBuilder()
-                  .setCustomId(
-                    "cancel_delete_channels"
-                  )
-                  .setLabel(
-                    "Anuluj"
-                  )
-                  .setStyle(
-                    ButtonStyle.Secondary
-                  )
-              );
-
-          await interaction.reply({
-            content:
-              "🚨 **UWAGA!**\n\n" +
-              "Ta operacja usunie wszystkie kanały serwera.\n\n" +
-              "Przed usunięciem zostanie wykonany backup.",
-            components: [row],
-            ephemeral: true
-          });
-
-          return;
-        }
-
-        // ==================================================
-        // REKRUTACJA
-        // ==================================================
-
-        if (
-          interaction.commandName ===
-          "rekrutacja"
-        ) {
-
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Tylko właściciel może wysłać panel rekrutacji.",
-              ephemeral: true
-            });
-          }
-
-          const embed =
-            new EmbedBuilder()
-              .setColor(
-                config.EMBED_COLOR
-              )
-              .setTitle(
-                "📋 REKRUTACJA DO ADMINISTRACJI"
-              )
-              .setDescription(
-                `Chcesz dołączyć do naszej administracji?\n\n` +
-                `Kliknij przycisk poniżej i wypełnij formularz rekrutacyjny.\n\n` +
-                `⭐ **Wymagania:**\n` +
-                `• kultura osobista\n` +
-                `• znajomość regulaminu\n` +
-                `• aktywność\n` +
-                `• odpowiedzialność\n` +
-                `• chęć pomocy innym`
-              )
-              .setFooter({
-                text:
-                  "Rekrutacja • Administracja"
-              });
-
-          const row =
-            new ActionRowBuilder()
-              .addComponents(
-                new ButtonBuilder()
-                  .setCustomId(
-                    "recruitment_button"
-                  )
-                  .setLabel(
-                    "Złóż podanie"
-                  )
-                  .setEmoji("📝")
-                  .setStyle(
-                    ButtonStyle.Success
-                  )
-              );
-
-          await interaction.reply({
-            embeds: [embed],
-            components: [row]
-          });
-
-          return;
-        }
+        const question = generateMathQuestion();
+
+        verificationQuestions.set(
+          interaction.user.id,
+          question
+        );
+
+        const modal = new ModalBuilder()
+          .setCustomId("verification_modal")
+          .setTitle("🔐 Weryfikacja Ravexmc.pl");
+
+        const nickInput = new TextInputBuilder()
+          .setCustomId("minecraft_nick")
+          .setLabel("Twój nick Minecraft")
+          .setPlaceholder("Np. RavexPlayer")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(16);
+
+        const mathInput = new TextInputBuilder()
+          .setCustomId("math_answer")
+          .setLabel(`Ile to ${question.question}?`)
+          .setPlaceholder("Wpisz wynik")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(5);
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(nickInput),
+          new ActionRowBuilder().addComponents(mathInput)
+        );
+
+        return interaction.showModal(modal);
       }
 
-      // ==================================================
-      // SELECT MENU
-      // ==================================================
+      // -----------------------------------------------
+      // TICKET
+      // -----------------------------------------------
 
-      if (
-        interaction.isStringSelectMenu()
-      ) {
+      if (interaction.commandName === "ticket") {
 
-        if (
-          interaction.customId ===
-          "ticket_category_select"
-        ) {
+        const options = Object.entries(ticketCategories).map(
+          ([value, category]) => ({
+            label: category.label,
+            description: category.description,
+            value,
+            emoji: category.emoji
+          })
+        );
 
-          const type =
-            interaction.values[0];
+        const embed = new EmbedBuilder()
+          .setColor(config.EMBED_COLOR)
+          .setTitle("🎫 CENTRUM POMOCY • RAVEXMC.PL")
+          .setDescription(
+            "Potrzebujesz pomocy? Wybierz odpowiednią kategorię poniżej.\n\n" +
+            "📌 **Przed utworzeniem ticketu przygotuj:**\n" +
+            "• swój nick Minecraft\n" +
+            "• dokładny opis sprawy\n" +
+            "• screenshot lub nagranie, jeśli jest potrzebne\n\n" +
+            "⚠️ Nie twórz kilku ticketów w tej samej sprawie."
+          )
+          .setFooter({
+            text: "Ravexmc.pl • System pomocy"
+          })
+          .setTimestamp();
 
-          const category =
-            ticketCategories[type];
+        const menu = new StringSelectMenuBuilder()
+          .setCustomId("ticket_select")
+          .setPlaceholder("🎫 Wybierz kategorię ticketu")
+          .addOptions(options);
 
-          const modal =
-            new ModalBuilder()
-              .setCustomId(
-                `ticket_modal_${type}`
-              )
-              .setTitle(
-                category.label
-              );
-
-          const nick =
-            new TextInputBuilder()
-              .setCustomId(
-                "ticket_nick"
-              )
-              .setLabel(
-                "Nick Minecraft"
-              )
-              .setPlaceholder(
-                "Wpisz swój nick Minecraft"
-              )
-              .setStyle(
-                TextInputStyle.Short
-              )
-              .setRequired(true)
-              .setMaxLength(16);
-
-          const problem =
-            new TextInputBuilder()
-              .setCustomId(
-                "ticket_problem"
-              )
-              .setLabel(
-                "Opisz swoją sprawę"
-              )
-              .setPlaceholder(
-                "Dokładnie opisz problem..."
-              )
-              .setStyle(
-                TextInputStyle.Paragraph
-              )
-              .setRequired(true)
-              .setMaxLength(1000);
-
-          const screen =
-            new TextInputBuilder()
-              .setCustomId(
-                "ticket_screen"
-              )
-              .setLabel(
-                "Screen / dodatkowe informacje"
-              )
-              .setPlaceholder(
-                "Opcjonalnie"
-              )
-              .setStyle(
-                TextInputStyle.Paragraph
-              )
-              .setRequired(false)
-              .setMaxLength(500);
-
-          modal.addComponents(
-            new ActionRowBuilder()
-              .addComponents(nick),
-
-            new ActionRowBuilder()
-              .addComponents(problem),
-
-            new ActionRowBuilder()
-              .addComponents(screen)
-          );
-
-          await interaction.showModal(
-            modal
-          );
-
-          return;
-        }
+        return interaction.reply({
+          embeds: [embed],
+          components: [
+            new ActionRowBuilder().addComponents(menu)
+          ]
+        });
       }
 
-      // ==================================================
-      // BUTTONS
-      // ==================================================
+      // -----------------------------------------------
+      // MEDIA
+      // -----------------------------------------------
+
+      if (interaction.commandName === "media") {
+
+        const embed = new EmbedBuilder()
+          .setColor(0xe91e63)
+          .setTitle("🎥 RANGA MEDIA • RAVEXMC.PL")
+          .setDescription(
+            "Chcesz otrzymać rangę **MEDIA**? Spełnij wszystkie wymagania poniżej.\n\n" +
+
+            "### 🎬 WYMAGANIA MEDIA\n" +
+            "• Musisz przygotować **4 TikToki**.\n" +
+            "• **1 z 4 TikToków musi być związany z naszym serwerem Minecraft**.\n" +
+            "• Pozostałe **3 TikToki nie muszą być związane z serwerem**.\n" +
+            "• **2 TikToki muszą mieć minimum 25 polubień**.\n" +
+            "• **2 TikToki muszą mieć minimum 50 polubień**.\n" +
+            "• W opisie każdego TikToka musi znajdować się dokładnie:\n" +
+            "`IP serwera: #ravexmc`\n" +
+            "• **IP serwera musi być widoczne na ekranie przez cały TikTok**.\n" +
+            "• Minimum **1 film musi mieć 2500 wyświetleń**.\n\n" +
+
+            "### 🎫 JAK OTRZYMAĆ RANGĘ?\n" +
+            "Po spełnieniu wymagań **nie otrzymasz rangi automatycznie**.\n\n" +
+            "Musisz:\n" +
+            "1️⃣ Otworzyć ticket.\n" +
+            "2️⃣ Wybrać kategorię **Media / Twórca**.\n" +
+            "3️⃣ Pokazać administracji wszystkie wymagane TikToki.\n" +
+            "4️⃣ Administracja sprawdzi materiały.\n" +
+            "5️⃣ Po pozytywnej weryfikacji otrzymasz rangę.\n\n" +
+
+            "━━━━━━━━━━━━━━━━━━━━\n\n" +
+
+            "### ⭐ RANGA TWÓRCA\n" +
+            "Ranga **TWÓRCA** jest przeznaczona dla osób regularnie tworzących wartościowe materiały.\n\n" +
+            "Aby ubiegać się o rangę TWÓRCA, przygotuj swoje materiały, kanały/profile oraz statystyki i zgłoś się przez **ticket**.\n\n" +
+            "Administracja indywidualnie sprawdzi jakość materiałów, aktywność oraz ich zgodność z serwerem.\n\n" +
+            "❗ **Ranga MEDIA ani TWÓRCA nie jest nadawana automatycznie.**"
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Media & Twórcy"
+          })
+          .setTimestamp();
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId("media_ticket")
+            .setLabel("Otwórz ticket")
+            .setEmoji("🎫")
+            .setStyle(ButtonStyle.Primary)
+        );
+
+        return interaction.reply({
+          embeds: [embed],
+          components: [row]
+        });
+      }
+
+      // -----------------------------------------------
+      // REGULAMIN MINECRAFT
+      // -----------------------------------------------
+
+      if (interaction.commandName === "regulamin") {
+
+        const embed = new EmbedBuilder()
+          .setColor(0x3498db)
+          .setTitle("📜 REGULAMIN SERWERA MINECRAFT")
+          .setDescription(
+            "### §1. Postanowienia ogólne\n" +
+            "1. Każdy gracz zobowiązany jest do przestrzegania regulaminu.\n" +
+            "2. Nieznajomość regulaminu nie zwalnia z jego przestrzegania.\n" +
+            "3. Administracja ma prawo reagować na sytuacje, które szkodzą serwerowi lub społeczności.\n\n" +
+
+            "### §2. Zachowanie na serwerze\n" +
+            "1. Zabronione są obrażanie, prowokowanie i celowe wywoływanie konfliktów.\n" +
+            "2. Zabronione jest spamowanie i floodowanie.\n" +
+            "3. Zabronione jest reklamowanie innych serwerów bez zgody administracji.\n" +
+            "4. Zabronione jest wykorzystywanie błędów serwera dla własnych korzyści.\n\n" +
+
+            "### §3. Oszustwa i niedozwolone oprogramowanie\n" +
+            "1. Zabronione jest używanie cheatów, wspomagaczy oraz niedozwolonych modyfikacji.\n" +
+            "2. Zabronione jest wykorzystywanie bugów i exploitów.\n" +
+            "3. Podejrzane zachowania mogą zostać zweryfikowane przez administrację.\n\n" +
+
+            "### §4. Kary\n" +
+            "1. Za złamanie regulaminu mogą zostać nałożone odpowiednie kary.\n" +
+            "2. Rodzaj kary zależy od przewinienia i jego powagi.\n" +
+            "3. Administracja może uwzględnić historię przewinień gracza.\n\n" +
+
+            "### §5. Zgłoszenia\n" +
+            "Problemy i zgłoszenia należy kierować do administracji poprzez system ticketów.\n\n" +
+
+            "⚠️ **Regulamin może zostać zmieniony przez administrację.**"
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Regulamin Minecraft"
+          })
+          .setTimestamp();
+
+        return interaction.reply({
+          embeds: [embed]
+        });
+      }
+
+      // -----------------------------------------------
+      // REGULAMIN DISCORD
+      // -----------------------------------------------
+
+      if (interaction.commandName === "regulamindiscord") {
+
+        const embed = new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle("📜 REGULAMIN DISCORD")
+          .setDescription(
+            "### §1. Kultura\n" +
+            "1. Szanuj innych użytkowników.\n" +
+            "2. Zabronione są wyzwiska, groźby, nękanie i prowokacje.\n" +
+            "3. Nie powoduj celowych konfliktów.\n\n" +
+
+            "### §2. Wiadomości\n" +
+            "1. Zakaz spamu i floodowania.\n" +
+            "2. Zakaz nadmiernego używania CAPS LOCKA.\n" +
+            "3. Korzystaj z kanałów zgodnie z ich przeznaczeniem.\n\n" +
+
+            "### §3. Reklamy\n" +
+            "1. Reklamowanie innych serwerów lub usług bez zgody administracji jest zabronione.\n" +
+            "2. Zabronione są również reklamy wysyłane na PW użytkowników w związku z serwerem.\n\n" +
+
+            "### §4. Treści\n" +
+            "1. Zakazane są treści nielegalne, NSFW oraz materiały mające na celu obrażanie innych.\n" +
+            "2. Zabronione jest publikowanie cudzych danych osobowych.\n\n" +
+
+            "### §5. Administracja\n" +
+            "1. Decyzje administracji należy respektować.\n" +
+            "2. Odwołania i problemy można zgłaszać poprzez ticket.\n" +
+            "3. Podszywanie się pod administrację jest zabronione.\n\n" +
+
+            "⚠️ **Nieznajomość regulaminu nie zwalnia z jego przestrzegania.**"
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Regulamin Discord"
+          })
+          .setTimestamp();
+
+        return interaction.reply({
+          embeds: [embed]
+        });
+      }
+
+      // -----------------------------------------------
+      // REKRUTACJA
+      // -----------------------------------------------
+
+      if (interaction.commandName === "rekrutacja") {
+
+        const embed = new EmbedBuilder()
+          .setColor(0x2ecc71)
+          .setTitle("🛡️ REKRUTACJA • RAVEXMC.PL")
+          .setDescription(
+            "Chcesz dołączyć do naszej administracji?\n\n" +
+            "Jeżeli jesteś osobą aktywną, odpowiedzialną i potrafisz pomagać graczom — złóż podanie.\n\n" +
+
+            "### 📋 PRZED ZŁOŻENIEM PODANIA\n" +
+            "• odpowiadaj szczerze,\n" +
+            "• nie kopiuj odpowiedzi z internetu,\n" +
+            "• zadbaj o czytelne odpowiedzi,\n" +
+            "• podanie powinno być napisane samodzielnie.\n\n" +
+
+            "### ❓ PYTANIA\n" +
+            "Formularz zapyta Cię między innymi o:\n" +
+            "👤 wiek\n" +
+            "🕐 dostępność\n" +
+            "🛠️ doświadczenie\n" +
+            "🎯 dlaczego chcesz zostać administratorem\n" +
+            "💎 dlaczego wybrałeś Ravexmc.pl\n" +
+            "📝 coś o sobie\n" +
+            "⚡ czas reakcji na zgłoszenia\n" +
+            "🏆 wcześniejsze doświadczenie administracyjne\n\n" +
+
+            "Kliknij przycisk poniżej, aby rozpocząć."
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Rekrutacja"
+          })
+          .setTimestamp();
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId("recruitment_apply")
+            .setLabel("Złóż podanie")
+            .setEmoji("📨")
+            .setStyle(ButtonStyle.Success)
+        );
+
+        return interaction.reply({
+          embeds: [embed],
+          components: [row]
+        });
+      }
+
+      // -----------------------------------------------
+      // KONKURS
+      // -----------------------------------------------
+
+      if (interaction.commandName === "konkurs") {
+
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content:
+              "❌ Tylko właściciel bota może tworzyć konkursy.",
+            ephemeral: true
+          });
+        }
+
+        const prize = interaction.options.getString("nagroda");
+        const durationText = interaction.options.getString("czas");
+
+        const duration = parseDuration(durationText);
+
+        if (!duration) {
+          return interaction.reply({
+            content:
+              "❌ Nieprawidłowy czas.\n\nPrzykłady: `30m`, `2h`, `7d`, `1w`.",
+            ephemeral: true
+          });
+        }
+
+        if (duration < 10000) {
+          return interaction.reply({
+            content:
+              "❌ Konkurs musi trwać minimum 10 sekund.",
+            ephemeral: true
+          });
+        }
+
+        const id = `${interaction.guild.id}_${Date.now()}`;
+
+        const contest = {
+          id,
+          prize,
+          channelId: interaction.channel.id,
+          messageId: null,
+          participants: new Set(),
+          finished: false,
+          endAt: Date.now() + duration
+        };
+
+        const endTimestamp = Math.floor(
+          contest.endAt / 1000
+        );
+
+        const embed = new EmbedBuilder()
+          .setColor(0xf1c40f)
+          .setTitle("🎉 KONKURS RAVEXMC.PL")
+          .setDescription(
+            `## 🎁 Nagroda\n` +
+            `**${prize}**\n\n` +
+
+            `⏰ **Koniec:** <t:${endTimestamp}:R>\n` +
+            `📅 **Dokładna data:** <t:${endTimestamp}:F>\n\n` +
+
+            `👥 **Uczestnicy:** 0\n\n` +
+
+            `Kliknij przycisk **WEŹ UDZIAŁ**, aby dołączyć do konkursu!\n\n` +
+            `🍀 Powodzenia wszystkim!`
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Konkurs"
+          })
+          .setTimestamp();
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`contest_join_${id}`)
+            .setLabel("Weź udział")
+            .setEmoji("🎉")
+            .setStyle(ButtonStyle.Success)
+        );
+
+        const message = await interaction.channel.send({
+          embeds: [embed],
+          components: [row]
+        });
+
+        contest.messageId = message.id;
+
+        contests.set(id, contest);
+
+        await interaction.reply({
+          content: "✅ Konkurs został utworzony!",
+          ephemeral: true
+        });
+
+        // Obsługa długich timerów
+        const schedule = async () => {
+          const current = contests.get(id);
+
+          if (!current || current.finished) return;
+
+          const remaining = current.endAt - Date.now();
+
+          if (remaining <= 0) {
+            await finishContest(id);
+            return;
+          }
+
+          setTimeout(schedule, Math.min(remaining, 2147483647));
+        };
+
+        schedule();
+
+        return;
+      }
+
+      // -----------------------------------------------
+      // TTT
+      // -----------------------------------------------
+
+      if (interaction.commandName === "kolkoikrzyzyk") {
+
+        const opponent =
+          interaction.options.getUser("przeciwnik");
+
+        if (!opponent) {
+          return interaction.reply({
+            content: "❌ Nie znaleziono przeciwnika.",
+            ephemeral: true
+          });
+        }
+
+        if (opponent.bot) {
+          return interaction.reply({
+            content: "❌ Nie możesz grać z botem.",
+            ephemeral: true
+          });
+        }
+
+        if (opponent.id === interaction.user.id) {
+          return interaction.reply({
+            content:
+              "❌ Nie możesz zagrać sam ze sobą.",
+            ephemeral: true
+          });
+        }
+
+        const gameId = `${Date.now()}_${interaction.user.id}`;
+
+        const game = {
+          id: gameId,
+          playerX: interaction.user.id,
+          playerO: opponent.id,
+          board: Array(9).fill(null),
+          turn: interaction.user.id,
+          finished: false,
+          channelId: interaction.channel.id
+        };
+
+        ticTacToeGames.set(gameId, game);
+
+        const embed = new EmbedBuilder()
+          .setColor(config.EMBED_COLOR)
+          .setTitle("🎮 KÓŁKO I KRZYŻYK")
+          .setDescription(
+            `${interaction.user} **❌** vs ${opponent} **⭕**\n\n` +
+            `🎯 Zaczyna: ${interaction.user}\n\n` +
+            `Kliknij pole, aby wykonać ruch.`
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Kółko i krzyżyk"
+          })
+          .setTimestamp();
+
+        await interaction.reply({
+          embeds: [embed],
+          components: createTicTacToeBoard(game)
+        });
+
+        setTimeout(() => {
+          const current = ticTacToeGames.get(gameId);
+
+          if (current && !current.finished) {
+            current.finished = true;
+            ticTacToeGames.delete(gameId);
+          }
+        }, 10 * 60 * 1000);
+
+        return;
+      }
+
+      // -----------------------------------------------
+      // RPS
+      // -----------------------------------------------
 
       if (
-        interaction.isButton()
+        interaction.commandName ===
+        "kamienpapiernozyce"
       ) {
 
-        // ==================================================
-        // KÓŁKO I KRZYŻYK
-        // ==================================================
+        const gameId =
+          `${Date.now()}_${interaction.user.id}`;
+
+        const game = {
+          id: gameId,
+          playerId: interaction.user.id,
+          round: 1,
+          playerScore: 0,
+          botScore: 0,
+          draws: 0,
+          history: [],
+          finished: false
+        };
+
+        rpsGames.set(gameId, game);
+
+        const embed = new EmbedBuilder()
+          .setColor(0x9b59b6)
+          .setTitle("🪨 📄 ✂️ KAMIEŃ • PAPIER • NOŻYCE")
+          .setDescription(
+            `### 🏆 Gra do 3 rund\n\n` +
+            `👤 ${interaction.user}\n` +
+            `🤖 RavexBot\n\n` +
+            `**Runda 1 / 3**\n\n` +
+            `Wybierz swój ruch poniżej!\n\n` +
+            `📊 Wynik: **0 : 0**`
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Kamień Papier Nożyce"
+          })
+          .setTimestamp();
+
+        return interaction.reply({
+          embeds: [embed],
+          components: [rpsButtons(game)]
+        });
+      }
+
+      // -----------------------------------------------
+      // CLEAR
+      // -----------------------------------------------
+
+      if (interaction.commandName === "clear") {
 
         if (
-          interaction.customId.startsWith(
-            "ttt_"
+          !interaction.member.permissions.has(
+            PermissionsBitField.Flags.ManageMessages
           )
         ) {
+          return interaction.reply({
+            content:
+              "❌ Nie masz uprawnienia **Zarządzanie wiadomościami**.",
+            ephemeral: true
+          });
+        }
 
-          const parts =
-            interaction.customId.split(
-              "_"
+        const amount =
+          interaction.options.getInteger("ilosc");
+
+        await interaction.channel.bulkDelete(
+          amount,
+          true
+        );
+
+        return interaction.reply({
+          content:
+            `🧹 Usunięto **${amount}** wiadomości.`,
+          ephemeral: true
+        });
+      }
+
+      // -----------------------------------------------
+      // BAN
+      // -----------------------------------------------
+
+      if (interaction.commandName === "ban") {
+
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content:
+              "❌ Nie masz uprawnień do tej komendy.",
+            ephemeral: true
+          });
+        }
+
+        const user =
+          interaction.options.getUser("uzytkownik");
+
+        const reason =
+          interaction.options.getString("powod") ||
+          "Brak podanego powodu";
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id)
+            .catch(() => null);
+
+        if (!member) {
+          return interaction.reply({
+            content:
+              "❌ Nie znaleziono użytkownika na serwerze.",
+            ephemeral: true
+          });
+        }
+
+        await member.ban({
+          reason
+        });
+
+        await sendLog(
+          interaction.guild,
+          "🔨 BAN",
+          `Użytkownik: ${user}\nModerator: ${interaction.user}\nPowód: ${reason}`,
+          0xe74c3c
+        );
+
+        return interaction.reply({
+          content:
+            `🔨 Zbanowano ${user}.\nPowód: **${reason}**`
+        });
+      }
+
+      // -----------------------------------------------
+      // KICK
+      // -----------------------------------------------
+
+      if (interaction.commandName === "kick") {
+
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content:
+              "❌ Nie masz uprawnień do tej komendy.",
+            ephemeral: true
+          });
+        }
+
+        const user =
+          interaction.options.getUser("uzytkownik");
+
+        const reason =
+          interaction.options.getString("powod") ||
+          "Brak podanego powodu";
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id)
+            .catch(() => null);
+
+        if (!member) {
+          return interaction.reply({
+            content:
+              "❌ Nie znaleziono użytkownika.",
+            ephemeral: true
+          });
+        }
+
+        await member.kick(reason);
+
+        await sendLog(
+          interaction.guild,
+          "👢 KICK",
+          `Użytkownik: ${user}\nModerator: ${interaction.user}\nPowód: ${reason}`,
+          0xe67e22
+        );
+
+        return interaction.reply({
+          content:
+            `👢 Wyrzucono ${user}.\nPowód: **${reason}**`
+        });
+      }
+
+      // -----------------------------------------------
+      // MUTE
+      // -----------------------------------------------
+
+      if (interaction.commandName === "mute") {
+
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content:
+              "❌ Nie masz uprawnień do tej komendy.",
+            ephemeral: true
+          });
+        }
+
+        const user =
+          interaction.options.getUser("uzytkownik");
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id)
+            .catch(() => null);
+
+        if (!member) {
+          return interaction.reply({
+            content:
+              "❌ Nie znaleziono użytkownika.",
+            ephemeral: true
+          });
+        }
+
+        let mutedRole =
+          interaction.guild.roles.cache.find(
+            role => role.name === "Muted"
+          );
+
+        if (!mutedRole) {
+          mutedRole =
+            await interaction.guild.roles.create({
+              name: "Muted",
+              reason: "Rola do wyciszeń"
+            });
+        }
+
+        await member.roles.add(
+          mutedRole,
+          "Mute przez bota"
+        );
+
+        await sendLog(
+          interaction.guild,
+          "🔇 MUTE",
+          `Użytkownik: ${user}\nModerator: ${interaction.user}`,
+          0xe67e22
+        );
+
+        return interaction.reply({
+          content:
+            `🔇 Wyciszono ${user}.`
+        });
+      }
+
+      // -----------------------------------------------
+      // UNMUTE
+      // -----------------------------------------------
+
+      if (interaction.commandName === "unmute") {
+
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content:
+              "❌ Nie masz uprawnień do tej komendy.",
+            ephemeral: true
+          });
+        }
+
+        const user =
+          interaction.options.getUser("uzytkownik");
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id)
+            .catch(() => null);
+
+        if (!member) {
+          return interaction.reply({
+            content:
+              "❌ Nie znaleziono użytkownika.",
+            ephemeral: true
+          });
+        }
+
+        const mutedRole =
+          interaction.guild.roles.cache.find(
+            role => role.name === "Muted"
+          );
+
+        if (mutedRole) {
+          await member.roles.remove(
+            mutedRole,
+            "Unmute przez bota"
+          );
+        }
+
+        return interaction.reply({
+          content:
+            `🔊 Odciszono ${user}.`
+        });
+      }
+
+      // -----------------------------------------------
+      // SAY
+      // -----------------------------------------------
+
+      if (interaction.commandName === "say") {
+
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content:
+              "❌ Nie masz uprawnień do tej komendy.",
+            ephemeral: true
+          });
+        }
+
+        const text =
+          interaction.options.getString("tekst");
+
+        await interaction.channel.send(text);
+
+        return interaction.reply({
+          content: "✅ Wysłano wiadomość.",
+          ephemeral: true
+        });
+      }
+
+      // -----------------------------------------------
+      // SERVER INFO
+      // -----------------------------------------------
+
+      if (interaction.commandName === "serverinfo") {
+
+        const guild = interaction.guild;
+
+        const embed = new EmbedBuilder()
+          .setColor(config.EMBED_COLOR)
+          .setTitle(`📊 ${guild.name}`)
+          .setDescription(
+            `👥 **Członkowie:** ${guild.memberCount}\n` +
+            `📁 **Kanały:** ${guild.channels.cache.size}\n` +
+            `🎭 **Role:** ${guild.roles.cache.size}\n` +
+            `🆔 **ID:** ${guild.id}\n` +
+            `📅 **Utworzono:** <t:${Math.floor(guild.createdTimestamp / 1000)}:D>`
+          )
+          .setThumbnail(
+            guild.iconURL({
+              dynamic: true
+            })
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Server Info"
+          })
+          .setTimestamp();
+
+        return interaction.reply({
+          embeds: [embed]
+        });
+      }
+
+      // -----------------------------------------------
+      // ZAPISZ
+      // -----------------------------------------------
+
+      if (interaction.commandName === "zapisz") {
+
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content:
+              "❌ Tylko właściciel może wykonać backup.",
+            ephemeral: true
+          });
+        }
+
+        const backup =
+          createBackup(interaction.guild);
+
+        return interaction.reply({
+          content:
+            `✅ Backup wykonany!\n` +
+            `📁 Kanałów: **${backup.channels.length}**\n` +
+            `📂 Kategorii: **${backup.categories.length}**`
+        });
+      }
+
+      // -----------------------------------------------
+      // BACKUP
+      // -----------------------------------------------
+
+      if (interaction.commandName === "backup") {
+
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content:
+              "❌ Tylko właściciel może wykonać tę operację.",
+            ephemeral: true
+          });
+        }
+
+        if (!fs.existsSync(backupFile)) {
+          return interaction.reply({
+            content:
+              "❌ Nie ma jeszcze żadnego backupu.",
+            ephemeral: true
+          });
+        }
+
+        const attachment =
+          new AttachmentBuilder(
+            backupFile,
+            {
+              name: "ravexmc-backup.json"
+            }
+          );
+
+        return interaction.reply({
+          content:
+            "📦 Oto ostatni backup serwera:",
+          files: [attachment],
+          ephemeral: true
+        });
+      }
+
+      // -----------------------------------------------
+      // USUŃ KANAŁY
+      // -----------------------------------------------
+
+      if (interaction.commandName === "usun-kanaly") {
+
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content:
+              "❌ Tylko właściciel może usunąć kanały.",
+            ephemeral: true
+          });
+        }
+
+        await interaction.deferReply({
+          ephemeral: true
+        });
+
+        createBackup(interaction.guild);
+
+        const channels =
+          [...interaction.guild.channels.cache.values()]
+            .filter(channel =>
+              channel.deletable &&
+              channel.id !== interaction.channel.id
             );
 
-          const gameId =
-            parts[1];
+        for (const channel of channels) {
+          await channel.delete(
+            "Usuwanie kanałów po wykonaniu backupu"
+          ).catch(() => {});
+        }
 
-          const position =
-            Number(parts[2]);
+        return interaction.editReply({
+          content:
+            "🗑️ Kanały zostały usunięte. Backup został zapisany."
+        });
+      }
+    }
 
-          const game =
-            ticTacToeGames.get(
-              gameId
-            );
+    // =================================================
+    // TICKET SELECT
+    // =================================================
 
-          if (!game) {
-            return interaction.reply({
-              content:
-                "❌ Ta gra już wygasła.",
-              ephemeral: true
-            });
-          }
+    if (interaction.isStringSelectMenu()) {
 
-          if (
-            interaction.user.id !==
-              game.playerX &&
-            interaction.user.id !==
-              game.playerO
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Nie jesteś graczem tej gry.",
-              ephemeral: true
-            });
-          }
+      if (interaction.customId === "ticket_select") {
 
-          if (
-            interaction.user.id !==
-            game.turn
-          ) {
-            return interaction.reply({
-              content:
-                "⏳ Teraz jest kolej przeciwnika.",
-              ephemeral: true
-            });
-          }
+        const categoryKey =
+          interaction.values[0];
 
-          if (
-            game.board[position]
-          ) {
-            return interaction.reply({
-              content:
-                "❌ To pole jest już zajęte.",
-              ephemeral: true
-            });
-          }
+        return createTicket(
+          interaction,
+          categoryKey
+        );
+      }
+    }
 
-          const mark =
-            interaction.user.id ===
-              game.playerX
-              ? "X"
-              : "O";
+    // =================================================
+    // BUTTONS
+    // =================================================
 
-          game.board[position] =
-            mark;
+    if (interaction.isButton()) {
 
-          const winner =
-            getWinner(
-              game.board
-            );
+      // -----------------------------------------------
+      // MEDIA -> TICKET
+      // -----------------------------------------------
 
-          if (winner) {
+      if (interaction.customId === "media_ticket") {
+        return createTicket(
+          interaction,
+          "ticket_media"
+        );
+      }
 
-            const winnerId =
-              winner === "X"
+      // -----------------------------------------------
+      // REKRUTACJA
+      // -----------------------------------------------
+
+      if (
+        interaction.customId ===
+        "recruitment_apply"
+      ) {
+
+        const modal = new ModalBuilder()
+          .setCustomId("recruitment_modal")
+          .setTitle("📨 Podanie • Ravexmc.pl");
+
+        const age = new TextInputBuilder()
+          .setCustomId("recruit_age")
+          .setLabel("Ile masz lat?")
+          .setPlaceholder("Np. 16")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(3);
+
+        const experience = new TextInputBuilder()
+          .setCustomId("recruit_experience")
+          .setLabel("Jakie masz doświadczenie?")
+          .setPlaceholder(
+            "Opisz swoje wcześniejsze doświadczenie..."
+          )
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(1000);
+
+        const whyUs = new TextInputBuilder()
+          .setCustomId("recruit_why")
+          .setLabel("Dlaczego chcesz dołączyć?")
+          .setPlaceholder(
+            "Dlaczego chcesz zostać częścią administracji?"
+          )
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(1000);
+
+        const whyServer = new TextInputBuilder()
+          .setCustomId("recruit_server")
+          .setLabel("Dlaczego akurat Ravexmc.pl?")
+          .setPlaceholder(
+            "Co podoba Ci się w naszym serwerze?"
+          )
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(1000);
+
+        const about = new TextInputBuilder()
+          .setCustomId("recruit_about")
+          .setLabel("Napisz coś o sobie")
+          .setPlaceholder(
+            "Przedstaw się i napisz coś więcej o sobie..."
+          )
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(1500);
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(age),
+          new ActionRowBuilder().addComponents(experience),
+          new ActionRowBuilder().addComponents(whyUs),
+          new ActionRowBuilder().addComponents(whyServer),
+          new ActionRowBuilder().addComponents(about)
+        );
+
+        return interaction.showModal(modal);
+      }
+
+      // -----------------------------------------------
+      // TICKET CLAIM
+      // -----------------------------------------------
+
+      if (
+        interaction.customId ===
+        "ticket_claim"
+      ) {
+
+        if (
+          !memberCanManageTicket(
+            interaction.member
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Tylko administracja może przejąć ticket.",
+            ephemeral: true
+          });
+        }
+
+        await interaction.reply({
+          content:
+            `👋 Ticket został przejęty przez ${interaction.user}.`
+        });
+
+        await sendLog(
+          interaction.guild,
+          "👋 Ticket przejęty",
+          `Kanał: ${interaction.channel}\nPrzejął: ${interaction.user}`
+        );
+
+        return;
+      }
+
+      // -----------------------------------------------
+      // TICKET CLOSE
+      // -----------------------------------------------
+
+      if (
+        interaction.customId ===
+        "ticket_close"
+      ) {
+
+        if (
+          interaction.channel.name.startsWith(
+            "ticket-"
+          ) === false
+        ) {
+          return interaction.reply({
+            content:
+              "❌ To nie jest kanał ticketu.",
+            ephemeral: true
+          });
+        }
+
+        if (
+          !memberCanManageTicket(
+            interaction.member
+          ) &&
+          interaction.channel.name !==
+            `ticket-${interaction.user.id}`
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Nie możesz zamknąć tego ticketu.",
+            ephemeral: true
+          });
+        }
+
+        await interaction.reply({
+          content:
+            "🔒 Ticket zostanie zamknięty za 5 sekund..."
+        });
+
+        await sendLog(
+          interaction.guild,
+          "🔒 Ticket zamknięty",
+          `Kanał: ${interaction.channel}\nZamknął: ${interaction.user}`
+        );
+
+        setTimeout(() => {
+          interaction.channel.delete(
+            "Zamknięcie ticketu"
+          ).catch(() => {});
+        }, 5000);
+
+        return;
+      }
+
+      // -----------------------------------------------
+      // CONTEST
+      // -----------------------------------------------
+
+      if (
+        interaction.customId.startsWith(
+          "contest_join_"
+        )
+      ) {
+
+        const id =
+          interaction.customId.replace(
+            "contest_join_",
+            ""
+          );
+
+        const contest = contests.get(id);
+
+        if (!contest || contest.finished) {
+          return interaction.reply({
+            content:
+              "❌ Ten konkurs już się zakończył.",
+            ephemeral: true
+          });
+        }
+
+        if (
+          contest.participants.has(
+            interaction.user.id
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Już bierzesz udział w tym konkursie!",
+            ephemeral: true
+          });
+        }
+
+        contest.participants.add(
+          interaction.user.id
+        );
+
+        const endTimestamp =
+          Math.floor(
+            contest.endAt / 1000
+          );
+
+        const embed = new EmbedBuilder()
+          .setColor(0xf1c40f)
+          .setTitle("🎉 KONKURS RAVEXMC.PL")
+          .setDescription(
+            `## 🎁 Nagroda\n` +
+            `**${contest.prize}**\n\n` +
+
+            `⏰ **Koniec:** <t:${endTimestamp}:R>\n` +
+            `📅 **Dokładna data:** <t:${endTimestamp}:F>\n\n` +
+
+            `👥 **Uczestnicy:** ${contest.participants.size}\n\n` +
+
+            `Kliknij przycisk **WEŹ UDZIAŁ**, aby dołączyć do konkursu!\n\n` +
+            `🍀 Powodzenia wszystkim!`
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Konkurs"
+          })
+          .setTimestamp();
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`contest_join_${id}`)
+            .setLabel("Weź udział")
+            .setEmoji("🎉")
+            .setStyle(ButtonStyle.Success)
+        );
+
+        const message =
+          await interaction.channel.messages
+            .fetch(contest.messageId)
+            .catch(() => null);
+
+        if (message) {
+          await message.edit({
+            embeds: [embed],
+            components: [row]
+          });
+        }
+
+        return interaction.reply({
+          content:
+            "🎉 Zostałeś dodany do konkursu!",
+          ephemeral: true
+        });
+      }
+
+      // -----------------------------------------------
+      // TTT
+      // -----------------------------------------------
+
+      if (
+        interaction.customId.startsWith("ttt_")
+      ) {
+
+        const parts =
+          interaction.customId.split("_");
+
+        const gameId = parts[1];
+        const position = Number(parts[2]);
+
+        const game =
+          ticTacToeGames.get(gameId);
+
+        if (!game || game.finished) {
+          return interaction.reply({
+            content:
+              "❌ Ta gra już się zakończyła.",
+            ephemeral: true
+          });
+        }
+
+        if (
+          interaction.user.id !== game.playerX &&
+          interaction.user.id !== game.playerO
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Nie jesteś uczestnikiem tej gry.",
+            ephemeral: true
+          });
+        }
+
+        if (
+          interaction.user.id !== game.turn
+        ) {
+          return interaction.reply({
+            content:
+              "⏳ Teraz jest kolej przeciwnika.",
+            ephemeral: true
+          });
+        }
+
+        if (game.board[position]) {
+          return interaction.reply({
+            content:
+              "❌ To pole jest już zajęte.",
+            ephemeral: true
+          });
+        }
+
+        const symbol =
+          interaction.user.id === game.playerX
+            ? "❌"
+            : "⭕";
+
+        game.board[position] = symbol;
+
+        const result =
+          checkTicTacToeWinner(game.board);
+
+        if (result) {
+
+          game.finished = true;
+
+          let text;
+
+          if (result === "DRAW") {
+            text = "🤝 **REMIS!**";
+          } else {
+            const winner =
+              result === "❌"
                 ? game.playerX
                 : game.playerO;
 
-            const embed =
-              new EmbedBuilder()
-                .setColor(
-                  config.EMBED_COLOR
-                )
-                .setTitle(
-                  "🏆 KONIEC GRY!"
-                )
-                .setDescription(
-                  `🎉 Wygrał <@${winnerId}>!\n\n` +
-                  `❌ <@${game.playerX}>\n` +
-                  `⭕ <@${game.playerO}>`
-                );
-
-            await interaction.update({
-              embeds: [embed],
-              components:
-                createGameButtons(
-                  gameId,
-                  game.board,
-                  true
-                )
-            });
-
-            return;
+            text =
+              `🏆 Wygrywa <@${winner}> ${result}!`;
           }
 
-          if (
-            game.board.every(
-              field =>
-                field !== null
+          const embed = new EmbedBuilder()
+            .setColor(
+              result === "DRAW"
+                ? 0xf1c40f
+                : 0x2ecc71
             )
-          ) {
+            .setTitle("🎮 KÓŁKO I KRZYŻYK")
+            .setDescription(
+              `<@${game.playerX}> **❌** vs <@${game.playerO}> **⭕**\n\n` +
+              text +
+              `\n\n⏱️ Gra zakończona.`
+            )
+            .setFooter({
+              text: "Ravexmc.pl • Kółko i krzyżyk"
+            })
+            .setTimestamp();
 
-            const embed =
-              new EmbedBuilder()
-                .setColor(
-                  config.EMBED_COLOR
-                )
-                .setTitle(
-                  "🤝 REMIS!"
-                )
-                .setDescription(
-                  `Nikt nie wygrał.\n\n` +
-                  `❌ <@${game.playerX}>\n` +
-                  `⭕ <@${game.playerO}>`
-                );
+          ticTacToeGames.delete(gameId);
 
-            await interaction.update({
-              embeds: [embed],
-              components:
-                createGameButtons(
-                  gameId,
-                  game.board,
-                  true
-                )
-            });
-
-            return;
-          }
-
-          game.turn =
-            game.turn ===
-              game.playerX
-              ? game.playerO
-              : game.playerX;
-
-          const embed =
-            new EmbedBuilder()
-              .setColor(
-                config.EMBED_COLOR
-              )
-              .setTitle(
-                "⭕ Kółko i krzyżyk ❌"
-              )
-              .setDescription(
-                `❌ <@${game.playerX}>\n` +
-                `⭕ <@${game.playerO}>\n\n` +
-                `🎮 Teraz ruch ma <@${game.turn}>\n\n` +
-                `⏱️ Gra zostanie usunięta po 10 minutach.`
-              );
-
-          await interaction.update({
+          return interaction.update({
             embeds: [embed],
-            components:
-              createGameButtons(
-                gameId,
-                game.board
-              )
-          });
-
-          return;
-        }
-
-        // ==================================================
-        // VERIFY
-        // ==================================================
-
-        if (
-          interaction.customId ===
-          "verify"
-        ) {
-
-          const a =
-            Math.floor(
-              Math.random() * 15
-            ) + 1;
-
-          const b =
-            Math.floor(
-              Math.random() * 15
-            ) + 1;
-
-          verificationQuestions.set(
-            interaction.user.id,
-            a + b
-          );
-
-          const modal =
-            new ModalBuilder()
-              .setCustomId(
-                "verification_modal"
-              )
-              .setTitle(
-                "🛡️ Weryfikacja"
-              );
-
-          const nick =
-            new TextInputBuilder()
-              .setCustomId(
-                "minecraft_nick"
-              )
-              .setLabel(
-                "Nick Minecraft"
-              )
-              .setPlaceholder(
-                "Twój nick Minecraft"
-              )
-              .setStyle(
-                TextInputStyle.Short
-              )
-              .setRequired(true)
-              .setMaxLength(16);
-
-          const math =
-            new TextInputBuilder()
-              .setCustomId(
-                "math_answer"
-              )
-              .setLabel(
-                `Ile to ${a} + ${b}?`
-              )
-              .setPlaceholder(
-                "Wpisz wynik"
-              )
-              .setStyle(
-                TextInputStyle.Short
-              )
-              .setRequired(true);
-
-          modal.addComponents(
-            new ActionRowBuilder()
-              .addComponents(nick),
-
-            new ActionRowBuilder()
-              .addComponents(math)
-          );
-
-          await interaction.showModal(
-            modal
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // DELETE CHANNELS
-        // ==================================================
-
-        if (
-          interaction.customId ===
-          "confirm_delete_channels"
-        ) {
-
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "🚫 Brak dostępu.",
-              ephemeral: true
-            });
-          }
-
-          await interaction.update({
-            content:
-              "💾 Tworzę backup przed usunięciem kanałów...",
-            embeds: [],
-            components: []
-          });
-
-          await createBackup(
-            interaction.guild
-          );
-
-          const channels =
-            [
-              ...interaction.guild.channels.cache.values()
-            ];
-
-          for (
-            const channel of channels
-          ) {
-
-            try {
-
-              await channel.delete(
-                "Usunięcie wszystkich kanałów przez właściciela"
-              );
-
-            } catch (error) {
-
-              console.log(
-                `Nie usunięto ${channel.name}: ${error.message}`
-              );
-            }
-          }
-
-          return;
-        }
-
-        if (
-          interaction.customId ===
-          "cancel_delete_channels"
-        ) {
-
-          return interaction.update({
-            content:
-              "✅ Usuwanie kanałów anulowane.",
-            components: []
+            components: createTicTacToeBoard(game)
           });
         }
 
-        // ==================================================
-        // RESTORE
-        // ==================================================
+        game.turn =
+          interaction.user.id === game.playerX
+            ? game.playerO
+            : game.playerX;
 
-        if (
-          interaction.customId ===
-          "restore_backup"
-        ) {
+        const embed = new EmbedBuilder()
+          .setColor(config.EMBED_COLOR)
+          .setTitle("🎮 KÓŁKO I KRZYŻYK")
+          .setDescription(
+            `<@${game.playerX}> **❌** vs <@${game.playerO}> **⭕**\n\n` +
+            `🎯 Teraz ruch: <@${game.turn}>`
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Kółko i krzyżyk"
+          })
+          .setTimestamp();
 
-          if (
-            !isOwner(interaction)
-          ) {
-            return interaction.reply({
-              content:
-                "🚫 Brak dostępu.",
-              ephemeral: true
-            });
-          }
-
-          await interaction.update({
-            content:
-              "♻️ Przywracam backup...",
-            components: []
-          });
-
-          try {
-
-            const backup =
-              await restoreBackup(
-                interaction.guild
-              );
-
-            await interaction.editReply({
-              content:
-                `✅ Backup przywrócony!\n\n` +
-                `📁 Kanały: **${backup.channels.length}**\n` +
-                `🏷️ Role: **${backup.roles.length}**`
-            });
-
-          } catch (error) {
-
-            console.log(
-              "Restore:",
-              error
-            );
-
-            await interaction.editReply({
-              content:
-                "❌ Nie udało się przywrócić backupu."
-            });
-          }
-
-          return;
-        }
-
-        if (
-          interaction.customId ===
-          "cancel_restore"
-        ) {
-
-          return interaction.update({
-            content:
-              "✅ Przywracanie anulowane.",
-            components: []
-          });
-        }
-
-        // ==================================================
-        // CLOSE TICKET
-        // ==================================================
-
-        if (
-          interaction.customId ===
-          "close_ticket"
-        ) {
-
-          const staff =
-            memberCanManageTicket(
-              interaction.member
-            );
-
-          const creator =
-            interaction.channel.name ===
-            `ticket-${interaction.user.id}`;
-
-          if (
-            !staff &&
-            !creator
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Nie możesz zamknąć tego ticketu.",
-              ephemeral: true
-            });
-          }
-
-          await interaction.reply(
-            "🔒 Ticket zostanie usunięty za 3 sekundy."
-          );
-
-          setTimeout(
-            () =>
-              interaction.channel
-                .delete()
-                .catch(() => {}),
-            3000
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // CLAIM TICKET
-        // ==================================================
-
-        if (
-          interaction.customId ===
-          "claim_ticket"
-        ) {
-
-          if (
-            !memberCanManageTicket(
-              interaction.member
-            )
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Nie masz uprawnień.",
-              ephemeral: true
-            });
-          }
-
-          await interaction.reply(
-            `👤 Ticket został przejęty przez ${interaction.user}.`
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // REKRUTACJA
-        // ==================================================
-
-        if (
-          interaction.customId ===
-          "recruitment_button"
-        ) {
-
-          const modal =
-            new ModalBuilder()
-              .setCustomId(
-                "recruitment_modal"
-              )
-              .setTitle(
-                "📋 Rekrutacja"
-              );
-
-          const age =
-            new TextInputBuilder()
-              .setCustomId(
-                "recruitment_age"
-              )
-              .setLabel(
-                "Wiek"
-              )
-              .setPlaceholder(
-                "Podaj swój wiek"
-              )
-              .setStyle(
-                TextInputStyle.Short
-              )
-              .setRequired(true);
-
-          const experience =
-            new TextInputBuilder()
-              .setCustomId(
-                "recruitment_experience"
-              )
-              .setLabel(
-                "Doświadczenie"
-              )
-              .setPlaceholder(
-                "Opisz swoje doświadczenie"
-              )
-              .setStyle(
-                TextInputStyle.Paragraph
-              )
-              .setRequired(true);
-
-          const reason =
-            new TextInputBuilder()
-              .setCustomId(
-                "recruitment_reason"
-              )
-              .setLabel(
-                "Dlaczego chcesz zostać administratorem?"
-              )
-              .setPlaceholder(
-                "Napisz kilka zdań"
-              )
-              .setStyle(
-                TextInputStyle.Paragraph
-              )
-              .setRequired(true);
-
-          modal.addComponents(
-            new ActionRowBuilder()
-              .addComponents(age),
-
-            new ActionRowBuilder()
-              .addComponents(experience),
-
-            new ActionRowBuilder()
-              .addComponents(reason)
-          );
-
-          await interaction.showModal(
-            modal
-          );
-
-          return;
-        }
+        return interaction.update({
+          embeds: [embed],
+          components: createTicTacToeBoard(game)
+        });
       }
 
-      // ==================================================
-      // MODALE
-      // ==================================================
+      // -----------------------------------------------
+      // RPS
+      // -----------------------------------------------
 
       if (
-        interaction.isModalSubmit()
+        interaction.customId.startsWith("rps_")
       ) {
 
-        // ==================================================
-        // WERYFIKACJA
-        // ==================================================
+        const parts =
+          interaction.customId.split("_");
+
+        const gameId = parts[1];
+        const playerChoice = parts[2];
+
+        const game =
+          rpsGames.get(gameId);
+
+        if (!game || game.finished) {
+          return interaction.reply({
+            content:
+              "❌ Ta gra już się zakończyła.",
+            ephemeral: true
+          });
+        }
 
         if (
-          interaction.customId ===
-          "verification_modal"
+          interaction.user.id !== game.playerId
         ) {
+          return interaction.reply({
+            content:
+              "❌ To nie jest Twoja gra.",
+            ephemeral: true
+          });
+        }
 
-          const nick =
-            interaction.fields.getTextInputValue(
-              "minecraft_nick"
-            );
+        const choices =
+          Object.keys(rpsChoices);
 
-          const answer =
-            interaction.fields.getTextInputValue(
-              "math_answer"
-            );
+        const botChoice =
+          choices[
+            Math.floor(
+              Math.random() * choices.length
+            )
+          ];
 
-          const correct =
-            verificationQuestions.get(
-              interaction.user.id
-            );
+        const result =
+          rpsWinner(
+            playerChoice,
+            botChoice
+          );
+
+        if (result === "PLAYER") {
+          game.playerScore++;
+        } else if (result === "BOT") {
+          game.botScore++;
+        } else {
+          game.draws++;
+        }
+
+        game.history.push({
+          round: game.round,
+          playerChoice,
+          botChoice,
+          result
+        });
+
+        const playerText =
+          `${rpsChoices[playerChoice].emoji} ${rpsChoices[playerChoice].label}`;
+
+        const botText =
+          `${rpsChoices[botChoice].emoji} ${rpsChoices[botChoice].label}`;
+
+        let resultText;
+
+        if (result === "PLAYER") {
+          resultText = "🟢 Wygrywasz tę rundę!";
+        } else if (result === "BOT") {
+          resultText = "🔴 Bot wygrywa tę rundę!";
+        } else {
+          resultText = "🟡 Remis w tej rundzie!";
+        }
+
+        if (game.round >= 3) {
+
+          game.finished = true;
+
+          let finalText;
 
           if (
-            Number(answer) !==
-            Number(correct)
+            game.playerScore >
+            game.botScore
           ) {
-
-            verificationQuestions.delete(
-              interaction.user.id
-            );
-
-            return interaction.reply({
-              content:
-                "❌ Niepoprawna odpowiedź.",
-              ephemeral: true
-            });
+            finalText =
+              `🏆 **WYGRYWASZ CAŁĄ GRĘ!** 🎉\n\n` +
+              `Gratulacje ${interaction.user}!`;
+          } else if (
+            game.botScore >
+            game.playerScore
+          ) {
+            finalText =
+              `🤖 **BOT WYGRYWA CAŁĄ GRĘ!**\n\n` +
+              `Spróbuj ponownie!`;
+          } else {
+            finalText =
+              `🤝 **REMIS!**\n\n` +
+              `Nikt nie wygrał całej gry.`;
           }
+
+          const historyText =
+            game.history.map(round =>
+              `**Runda ${round.round}:** ${rpsChoices[round.playerChoice].emoji} vs ${rpsChoices[round.botChoice].emoji}`
+            ).join("\n");
+
+          const embed = new EmbedBuilder()
+            .setColor(0x9b59b6)
+            .setTitle(
+              "🏆 KAMIEŃ • PAPIER • NOŻYCE — KONIEC"
+            )
+            .setDescription(
+              `👤 ${interaction.user}\n` +
+              `🤖 RavexBot\n\n` +
+
+              `### 📊 KOŃCOWY WYNIK\n` +
+              `👤 **${game.playerScore}** : **${game.botScore}** 🤖\n\n` +
+
+              `${finalText}\n\n` +
+
+              `### 📜 HISTORIA RUND\n` +
+              historyText
+            )
+            .setFooter({
+              text: "Ravexmc.pl • Gra zakończona"
+            })
+            .setTimestamp();
+
+          rpsGames.delete(gameId);
+
+          return interaction.update({
+            embeds: [embed],
+            components: [
+              rpsButtons({
+                ...game,
+                finished: true
+              })
+            ]
+          });
+        }
+
+        game.round++;
+
+        const embed = new EmbedBuilder()
+          .setColor(0x9b59b6)
+          .setTitle(
+            "🪨 📄 ✂️ KAMIEŃ • PAPIER • NOŻYCE"
+          )
+          .setDescription(
+            `👤 ${interaction.user}\n` +
+            `🤖 RavexBot\n\n` +
+
+            `### 🎯 Runda ${game.round - 1} / 3\n\n` +
+            `👤 Twój wybór: **${playerText}**\n` +
+            `🤖 Bot: **${botText}**\n\n` +
+
+            `${resultText}\n\n` +
+
+            `### 📊 Wynik\n` +
+            `👤 **${game.playerScore}** : **${game.botScore}** 🤖\n\n` +
+
+            `### 🎮 Runda ${game.round} / 3\n` +
+            `Wybierz następny ruch!`
+          )
+          .setFooter({
+            text: "Ravexmc.pl • Kamień Papier Nożyce"
+          })
+          .setTimestamp();
+
+        return interaction.update({
+          embeds: [embed],
+          components: [rpsButtons(game)]
+        });
+      }
+    }
+
+    // =================================================
+    // MODALS
+    // =================================================
+
+    if (interaction.isModalSubmit()) {
+
+      // -----------------------------------------------
+      // WERYFIKACJA
+      // -----------------------------------------------
+
+      if (
+        interaction.customId ===
+        "verification_modal"
+      ) {
+
+        const nick =
+          interaction.fields.getTextInputValue(
+            "minecraft_nick"
+          ).trim();
+
+        const answer =
+          interaction.fields.getTextInputValue(
+            "math_answer"
+          ).trim();
+
+        const question =
+          verificationQuestions.get(
+            interaction.user.id
+          );
+
+        if (!question) {
+          return interaction.reply({
+            content:
+              "❌ Weryfikacja wygasła. Uruchom `/weryfikacja` ponownie.",
+            ephemeral: true
+          });
+        }
+
+        if (
+          Number(answer) !==
+          question.answer
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Nieprawidłowy wynik działania matematycznego.",
+            ephemeral: true
+          });
+        }
+
+        const role =
+          interaction.guild.roles.cache.get(
+            config.VERIFIED_ROLE_ID
+          );
+
+        if (!role) {
+          return interaction.reply({
+            content:
+              "❌ Nie znaleziono roli zweryfikowanej.",
+            ephemeral: true
+          });
+        }
+
+        try {
+          await interaction.member.roles.add(
+            role,
+            "Pomyślna weryfikacja"
+          );
+
+          await interaction.member.setNickname(
+            nick
+          ).catch(() => {});
 
           verificationQuestions.delete(
             interaction.user.id
           );
 
-          const role =
-            interaction.guild.roles.cache.get(
-              config.VERIFIED_ROLE_ID
-            );
-
-          if (!role) {
-            return interaction.reply({
-              content:
-                "❌ Nie znaleziono roli weryfikacyjnej.",
-              ephemeral: true
-            });
-          }
-
-          await interaction.member.roles.add(
-            role
-          );
-
-          try {
-            await interaction.member.setNickname(
-              nick
-            );
-          } catch {}
-
-          await interaction.reply({
-            content:
-              `✅ Weryfikacja zakończona pomyślnie!\n\n` +
-              `🎮 Nick Minecraft: **${nick}**`,
-            ephemeral: true
-          });
-
-          return;
-        }
-
-        // ==================================================
-        // TICKET
-        // ==================================================
-
-        if (
-          interaction.customId.startsWith(
-            "ticket_modal_"
-          )
-        ) {
-
-          const type =
-            interaction.customId.replace(
-              "ticket_modal_",
-              ""
-            );
-
-          const category =
-            ticketCategories[type];
-
-          const nick =
-            interaction.fields.getTextInputValue(
-              "ticket_nick"
-            );
-
-          const problem =
-            interaction.fields.getTextInputValue(
-              "ticket_problem"
-            );
-
-          const screen =
-            interaction.fields.getTextInputValue(
-              "ticket_screen"
-            ) || "Brak";
-
-          const existing =
-            interaction.guild.channels.cache.find(
-              channel =>
-                channel.name ===
-                `ticket-${interaction.user.id}`
-            );
-
-          if (existing) {
-            return interaction.reply({
-              content:
-                `❌ Masz już otwarty ticket: ${existing}`,
-              ephemeral: true
-            });
-          }
-
-          const permissions = [
-            {
-              id:
-                interaction.guild.id,
-
-              deny: [
-                PermissionsBitField.Flags.ViewChannel
-              ]
-            },
-
-            {
-              id:
-                interaction.user.id,
-
-              allow: [
-                PermissionsBitField.Flags.ViewChannel,
-                PermissionsBitField.Flags.SendMessages,
-                PermissionsBitField.Flags.ReadMessageHistory
-              ]
-            }
-          ];
-
-          for (
-            const roleId of getTicketStaffRoles()
-          ) {
-
-            permissions.push({
-              id: roleId,
-
-              allow: [
-                PermissionsBitField.Flags.ViewChannel,
-                PermissionsBitField.Flags.SendMessages,
-                PermissionsBitField.Flags.ReadMessageHistory
-              ]
-            });
-          }
-
-          const channel =
-            await interaction.guild.channels.create({
-              name:
-                `ticket-${interaction.user.id}`,
-
-              type:
-                ChannelType.GuildText,
-
-              parent:
-                config.TICKET_CATEGORY_ID,
-
-              permissionOverwrites:
-                permissions
-            });
-
-          const embed =
-            new EmbedBuilder()
-              .setColor(
-                config.EMBED_COLOR
-              )
-              .setTitle(
-                "🎫 NOWY TICKET"
-              )
-              .setDescription(
-                `Witaj ${interaction.user}!\n\n` +
-
-                `📂 **Kategoria**\n` +
-                `${category.label}\n\n` +
-
-                `🎮 **Nick Minecraft**\n` +
-                `${nick}\n\n` +
-
-                `📝 **Opis sprawy**\n` +
-                `${problem}\n\n` +
-
-                `🖼️ **Screen / dodatkowe informacje**\n` +
-                `${screen}`
-              )
-              .setFooter({
-                text:
-                  "Administracja odpowie tak szybko, jak to możliwe."
-              })
-              .setTimestamp();
-
-          const buttons =
-            new ActionRowBuilder()
-              .addComponents(
-                new ButtonBuilder()
-                  .setCustomId(
-                    "claim_ticket"
-                  )
-                  .setLabel(
-                    "Przejmij ticket"
-                  )
-                  .setEmoji("👤")
-                  .setStyle(
-                    ButtonStyle.Primary
-                  ),
-
-                new ButtonBuilder()
-                  .setCustomId(
-                    "close_ticket"
-                  )
-                  .setLabel(
-                    "Zamknij ticket"
-                  )
-                  .setEmoji("🔒")
-                  .setStyle(
-                    ButtonStyle.Danger
-                  )
-              );
-
-          const staff =
-            getTicketStaffRoles()
-              .map(
-                id => `<@&${id}>`
-              )
-              .join(" ");
-
-          await channel.send({
-            content:
-              `${interaction.user} ${staff}`,
-            embeds: [embed],
-            components: [buttons]
-          });
-
-          await interaction.reply({
-            content:
-              `✅ Twój ticket został utworzony: ${channel}`,
-            ephemeral: true
-          });
-
           await sendLog(
             interaction.guild,
-            "🎫 Nowy ticket",
-            `Użytkownik: ${interaction.user}\n` +
-            `Kategoria: **${category.label}**\n` +
-            `Kanał: ${channel}`
+            "✅ Weryfikacja",
+            `Użytkownik: ${interaction.user}\nNick Minecraft: **${nick}**`
           );
 
-          return;
-        }
-
-        // ==================================================
-        // REKRUTACJA
-        // ==================================================
-
-        if (
-          interaction.customId ===
-          "recruitment_modal"
-        ) {
-
-          const age =
-            interaction.fields.getTextInputValue(
-              "recruitment_age"
-            );
-
-          const experience =
-            interaction.fields.getTextInputValue(
-              "recruitment_experience"
-            );
-
-          const reason =
-            interaction.fields.getTextInputValue(
-              "recruitment_reason"
-            );
-
-          const channel =
-            getLogChannel(
-              interaction.guild
-            );
-
-          if (channel) {
-
-            const embed =
-              new EmbedBuilder()
-                .setColor(
-                  config.EMBED_COLOR
-                )
-                .setTitle(
-                  "📋 NOWE PODANIE REKRUTACYJNE"
-                )
-                .addFields(
-                  {
-                    name:
-                      "👤 Kandydat",
-                    value:
-                      `${interaction.user} (${interaction.user.tag})`
-                  },
-                  {
-                    name:
-                      "🎂 Wiek",
-                    value: age
-                  },
-                  {
-                    name:
-                      "⭐ Doświadczenie",
-                    value:
-                      experience
-                  },
-                  {
-                    name:
-                      "💬 Dlaczego chcesz dołączyć?",
-                    value:
-                      reason
-                  }
-                )
-                .setTimestamp();
-
-            await channel.send({
-              embeds: [embed]
-            });
-          }
-
-          await interaction.reply({
+          return interaction.reply({
             content:
-              "✅ Twoje podanie zostało wysłane do administracji.",
+              `✅ Weryfikacja zakończona pomyślnie!\n\n` +
+              `🎮 Nick Minecraft: **${nick}**\n` +
+              `🏷️ Otrzymano rolę: ${role}`,
             ephemeral: true
           });
 
-          return;
+        } catch (error) {
+
+          console.log(
+            "Błąd weryfikacji:",
+            error.message
+          );
+
+          return interaction.reply({
+            content:
+              "❌ Nie udało się nadać roli. Sprawdź, czy bot ma odpowiednią pozycję w hierarchii ról.",
+            ephemeral: true
+          });
         }
       }
 
-    } catch (error) {
+      // -----------------------------------------------
+      // REKRUTACJA
+      // -----------------------------------------------
 
-      console.error(
-        "Interaction error:",
-        error
-      );
+      if (
+        interaction.customId ===
+        "recruitment_modal"
+      ) {
 
-      try {
+        const age =
+          interaction.fields.getTextInputValue(
+            "recruit_age"
+          );
 
-        if (
-          interaction.replied ||
-          interaction.deferred
-        ) {
+        const experience =
+          interaction.fields.getTextInputValue(
+            "recruit_experience"
+          );
 
-          await interaction.followUp({
+        const why =
+          interaction.fields.getTextInputValue(
+            "recruit_why"
+          );
+
+        const whyServer =
+          interaction.fields.getTextInputValue(
+            "recruit_server"
+          );
+
+        const about =
+          interaction.fields.getTextInputValue(
+            "recruit_about"
+          );
+
+        const guild =
+          interaction.guild;
+
+        const existing =
+          guild.channels.cache.find(
+            channel =>
+              channel.name ===
+              `podanie-${interaction.user.id}`
+          );
+
+        if (existing) {
+          return interaction.reply({
             content:
-              "❌ Wystąpił błąd podczas wykonywania tej operacji.",
-            ephemeral: true
-          });
-
-        } else {
-
-          await interaction.reply({
-            content:
-              "❌ Wystąpił błąd podczas wykonywania tej operacji.",
+              `❌ Masz już otwarte podanie: ${existing}`,
             ephemeral: true
           });
         }
 
-      } catch {}
+        const recruitmentCategory =
+          guild.channels.cache.get(
+            config.TICKET_CATEGORY_ID
+          );
+
+        if (
+          !recruitmentCategory ||
+          recruitmentCategory.type !==
+            ChannelType.GuildCategory
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Nie znaleziono kategorii, w której można utworzyć podanie. Sprawdź `TICKET_CATEGORY_ID`.",
+            ephemeral: true
+          });
+        }
+
+        const permissions = [
+          {
+            id: guild.roles.everyone.id,
+            deny: [
+              PermissionsBitField.Flags.ViewChannel
+            ]
+          },
+
+          {
+            id: interaction.user.id,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory
+            ]
+          }
+        ];
+
+        for (const roleId of getTicketStaffRoles()) {
+          permissions.push({
+            id: roleId,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory,
+              PermissionsBitField.Flags.ManageMessages
+            ]
+          });
+        }
+
+        const channel =
+          await guild.channels.create({
+            name: `podanie-${interaction.user.id}`,
+            type: ChannelType.GuildText,
+            parent: recruitmentCategory.id,
+            topic:
+              `Podanie rekrutacyjne: ${interaction.user.tag}`,
+            permissionOverwrites: permissions
+          });
+
+        const embed = new EmbedBuilder()
+          .setColor(0x2ecc71)
+          .setTitle("📨 NOWE PODANIE REKRUTACYJNE")
+          .setDescription(
+            `### 👤 Kandydat\n${interaction.user}\n\n` +
+
+            `### 🎂 Wiek\n${age}\n\n` +
+
+            `### 🛠️ Doświadczenie\n${experience}\n\n` +
+
+            `### 🎯 Dlaczego chcesz dołączyć do administracji?\n${why}\n\n` +
+
+            `### 💎 Dlaczego Ravexmc.pl?\n${whyServer}\n\n` +
+
+            `### 📝 Coś o sobie\n${about}`
+          )
+          .setFooter({
+            text:
+              "Ravexmc.pl • Podanie rekrutacyjne"
+          })
+          .setTimestamp();
+
+        const buttons =
+          new ActionRowBuilder().addComponents(
+
+            new ButtonBuilder()
+              .setCustomId("application_accept")
+              .setLabel("Przyjmij")
+              .setEmoji("✅")
+              .setStyle(ButtonStyle.Success),
+
+            new ButtonBuilder()
+              .setCustomId("application_reject")
+              .setLabel("Odrzuć")
+              .setEmoji("❌")
+              .setStyle(ButtonStyle.Danger)
+          );
+
+        await channel.send({
+          content:
+            `${getTicketStaffRoles().map(id => `<@&${id}>`).join(" ")}\n📨 Nowe podanie!`,
+          embeds: [embed],
+          components: [buttons]
+        });
+
+        await sendLog(
+          guild,
+          "📨 Nowe podanie",
+          `Kandydat: ${interaction.user}\nKanał: ${channel}`
+        );
+
+        return interaction.reply({
+          content:
+            `✅ Twoje podanie zostało wysłane!\n📨 ${channel}`,
+          ephemeral: true
+        });
+      }
     }
+
+    // =================================================
+    // APPLICATION BUTTONS
+    // =================================================
+
+    if (interaction.isButton()) {
+
+      if (
+        interaction.customId ===
+        "application_accept"
+      ) {
+
+        if (
+          !memberCanManageTicket(
+            interaction.member
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Tylko administracja może rozpatrywać podania.",
+            ephemeral: true
+          });
+        }
+
+        await interaction.reply({
+          content:
+            `✅ Podanie zostało **zaakceptowane** przez ${interaction.user}.\n\n` +
+            `Administracja może teraz skontaktować się z kandydatem.`
+        });
+
+        return;
+      }
+
+      if (
+        interaction.customId ===
+        "application_reject"
+      ) {
+
+        if (
+          !memberCanManageTicket(
+            interaction.member
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Tylko administracja może rozpatrywać podania.",
+            ephemeral: true
+          });
+        }
+
+        await interaction.reply({
+          content:
+            `❌ Podanie zostało **odrzucone** przez ${interaction.user}.`
+        });
+
+        return;
+      }
+    }
+
+  } catch (error) {
+
+    console.error(
+      "Błąd Interaction:",
+      error
+    );
+
+    try {
+
+      if (interaction.replied || interaction.deferred) {
+
+        await interaction.followUp({
+          content:
+            "❌ Wystąpił błąd podczas wykonywania tej operacji.",
+          ephemeral: true
+        });
+
+      } else {
+
+        await interaction.reply({
+          content:
+            "❌ Wystąpił błąd podczas wykonywania tej operacji.",
+          ephemeral: true
+        });
+
+      }
+
+    } catch {}
   }
-);
+});
 
-// ======================================================
+// =====================================================
 // LOGIN
-// ======================================================
+// =====================================================
 
-if (
-  !process.env.DISCORD_TOKEN
-) {
-
+if (!process.env.DISCORD_TOKEN) {
   console.error(
-    "❌ Brak DISCORD_TOKEN na Renderze!"
+    "❌ Brak DISCORD_TOKEN w zmiennych środowiskowych Render."
   );
+} else {
 
-  process.exit(1);
+  client.login(
+    process.env.DISCORD_TOKEN
+  ).catch(error => {
+    console.error(
+      "❌ Nie udało się zalogować bota:",
+      error
+    );
+  });
+
 }
-
-client.login(
-  process.env.DISCORD_TOKEN
-);
