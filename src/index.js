@@ -12,6 +12,7 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  StringSelectMenuBuilder,
   AuditLogEvent,
   Events
 } = require("discord.js");
@@ -23,22 +24,20 @@ const http = require("http");
 const config = require("./config");
 
 // =====================================================
-// HTTP SERVER - WYMAGANY PRZEZ RENDER
+// RENDER HTTP
 // =====================================================
 
 const PORT = process.env.PORT || 3000;
 
-http
-  .createServer((req, res) => {
-    res.writeHead(200, {
-      "Content-Type": "text/plain; charset=utf-8"
-    });
-
-    res.end("Bot Discord działa!");
-  })
-  .listen(PORT, "0.0.0.0", () => {
-    console.log("Serwer HTTP działa na porcie " + PORT);
+http.createServer((req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/plain; charset=utf-8"
   });
+
+  res.end("Bot Discord działa!");
+}).listen(PORT, "0.0.0.0", () => {
+  console.log("Serwer HTTP działa na porcie " + PORT);
+});
 
 // =====================================================
 // CLIENT
@@ -59,25 +58,19 @@ const client = new Client({
 });
 
 // =====================================================
-// PLIKI BACKUPU
+// MAPY / DANE
 // =====================================================
+
+const spamCounter = new Map();
+const verificationQuestions = new Map();
+
+// GRY KÓŁKO I KRZYŻYK
+const ticTacToeGames = new Map();
 
 const BACKUP_FILE = path.join(__dirname, "backup.json");
 
 // =====================================================
-// SPAM
-// =====================================================
-
-const spamCounter = new Map();
-
-// =====================================================
-// WERYFIKACJA
-// =====================================================
-
-const verificationQuestions = new Map();
-
-// =====================================================
-// POMOCNICZE
+// FUNKCJE
 // =====================================================
 
 function isConfigured(value) {
@@ -95,10 +88,6 @@ function isOwner(interaction) {
 
 function getLogChannel(guild) {
   if (!guild) return null;
-
-  if (!isConfigured(config.LOG_CHANNEL_ID)) {
-    return null;
-  }
 
   return guild.channels.cache.get(config.LOG_CHANNEL_ID) || null;
 }
@@ -119,7 +108,7 @@ async function sendLog(guild, title, description, color = config.EMBED_COLOR) {
       embeds: [embed]
     });
   } catch (error) {
-    console.log("Nie udało się wysłać loga:", error.message);
+    console.log("Błąd logów:", error.message);
   }
 }
 
@@ -157,7 +146,7 @@ async function createBackup(guild) {
     .sort((a, b) => a.rawPosition - b.rawPosition);
 
   for (const channel of channels) {
-    const data = {
+    backup.channels.push({
       id: channel.id,
       name: channel.name,
       type: channel.type,
@@ -165,22 +154,8 @@ async function createBackup(guild) {
       position: channel.rawPosition,
       topic: channel.topic || null,
       nsfw: channel.nsfw || false,
-      rateLimitPerUser: channel.rateLimitPerUser || 0,
-      permissionOverwrites: []
-    };
-
-    if (channel.permissionOverwrites) {
-      for (const overwrite of channel.permissionOverwrites.cache.values()) {
-        data.permissionOverwrites.push({
-          id: overwrite.id,
-          type: overwrite.type,
-          allow: overwrite.allow.bitfield.toString(),
-          deny: overwrite.deny.bitfield.toString()
-        });
-      }
-    }
-
-    backup.channels.push(data);
+      rateLimitPerUser: channel.rateLimitPerUser || 0
+    });
   }
 
   fs.writeFileSync(
@@ -192,101 +167,94 @@ async function createBackup(guild) {
   return backup;
 }
 
-async function restoreBackup(guild) {
-  if (!fs.existsSync(BACKUP_FILE)) {
-    throw new Error("Nie znaleziono backupu.");
-  }
+// =====================================================
+// KÓŁKO I KRZYŻYK
+// =====================================================
 
-  const backup = JSON.parse(
-    fs.readFileSync(BACKUP_FILE, "utf8")
-  );
+function getTicTacToeWinner(board) {
+  const combinations = [
+    [0, 1, 2],
+    [3, 4, 5],
+    [6, 7, 8],
 
-  const existingNames = new Set(
-    guild.channels.cache.map(channel => channel.name)
-  );
+    [0, 3, 6],
+    [1, 4, 7],
+    [2, 5, 8],
 
-  const createdCategories = new Map();
+    [0, 4, 8],
+    [2, 4, 6]
+  ];
 
-  // Najpierw kategorie
-  const categories = backup.channels.filter(
-    channel => channel.type === ChannelType.GuildCategory
-  );
-
-  for (const data of categories) {
-    if (existingNames.has(data.name)) {
-      const existing = guild.channels.cache.find(
-        channel =>
-          channel.name === data.name &&
-          channel.type === ChannelType.GuildCategory
-      );
-
-      if (existing) {
-        createdCategories.set(data.id, existing.id);
-      }
-
-      continue;
-    }
-
-    const category = await guild.channels.create({
-      name: data.name,
-      type: ChannelType.GuildCategory
-    });
-
-    createdCategories.set(data.id, category.id);
-  }
-
-  // Potem pozostałe kanały
-  const normalChannels = backup.channels.filter(
-    channel => channel.type !== ChannelType.GuildCategory
-  );
-
-  for (const data of normalChannels) {
-    if (existingNames.has(data.name)) {
-      continue;
-    }
-
-    let parentId = null;
-
-    if (data.parentId) {
-      parentId = createdCategories.get(data.parentId) || null;
-    }
-
-    const options = {
-      name: data.name,
-      type: data.type
-    };
-
-    if (parentId) {
-      options.parent = parentId;
-    }
-
+  for (const [a, b, c] of combinations) {
     if (
-      data.type === ChannelType.GuildText ||
-      data.type === ChannelType.GuildAnnouncement ||
-      data.type === ChannelType.GuildForum
+      board[a] &&
+      board[a] === board[b] &&
+      board[a] === board[c]
     ) {
-      if (data.topic) {
-        options.topic = data.topic;
-      }
-
-      options.nsfw = Boolean(data.nsfw);
-      options.rateLimitPerUser = data.rateLimitPerUser || 0;
-    }
-
-    try {
-      const channel = await guild.channels.create(options);
-
-      console.log("Przywrócono kanał:", channel.name);
-    } catch (error) {
-      console.log(
-        "Nie udało się przywrócić kanału:",
-        data.name,
-        error.message
-      );
+      return board[a];
     }
   }
 
-  return true;
+  return null;
+}
+
+function createTicTacToeButtons(gameId, board, disabled = false) {
+  const rows = [];
+
+  for (let rowIndex = 0; rowIndex < 3; rowIndex++) {
+    const row = new ActionRowBuilder();
+
+    for (let columnIndex = 0; columnIndex < 3; columnIndex++) {
+      const index = rowIndex * 3 + columnIndex;
+
+      const value = board[index];
+
+      const button = new ButtonBuilder()
+        .setCustomId(`ttt_${gameId}_${index}`)
+        .setLabel(
+          value === "X"
+            ? "❌"
+            : value === "O"
+              ? "⭕"
+              : "・"
+        )
+        .setDisabled(disabled || Boolean(value));
+
+      if (value === "X") {
+        button.setStyle(ButtonStyle.Danger);
+      } else if (value === "O") {
+        button.setStyle(ButtonStyle.Primary);
+      } else {
+        button.setStyle(ButtonStyle.Secondary);
+      }
+
+      row.addComponents(button);
+    }
+
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+async function deleteTicTacToeGame(gameId) {
+  const game = ticTacToeGames.get(gameId);
+
+  if (!game) return;
+
+  ticTacToeGames.delete(gameId);
+
+  try {
+    const channel = await client.channels.fetch(game.channelId);
+
+    if (!channel?.isTextBased()) return;
+
+    const message = await channel.messages.fetch(game.messageId);
+
+    await message.delete().catch(() => {});
+  } catch (error) {
+    console.log("Gra już nie istnieje lub nie można jej usunąć.");
+  }
 }
 
 // =====================================================
@@ -304,12 +272,22 @@ const commands = [
     .setDescription("Wyślij panel ticketów"),
 
   new SlashCommandBuilder()
+    .setName("kolkoikrzyzyk")
+    .setDescription("Zagraj w kółko i krzyżyk")
+    .addUserOption(option =>
+      option
+        .setName("gracz")
+        .setDescription("Wybierz przeciwnika")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
     .setName("clear")
     .setDescription("Usuń wiadomości")
     .addIntegerOption(option =>
       option
         .setName("ilosc")
-        .setDescription("Ilość wiadomości 1-100")
+        .setDescription("Ilość wiadomości")
         .setRequired(true)
         .setMinValue(1)
         .setMaxValue(100)
@@ -383,15 +361,11 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("backup")
-    .setDescription("Utwórz backup kanałów serwera"),
-
-  new SlashCommandBuilder()
-    .setName("restore")
-    .setDescription("Przywróć kanały z backupu"),
+    .setDescription("Utwórz backup kanałów"),
 
   new SlashCommandBuilder()
     .setName("usun-kanaly")
-    .setDescription("USUŃ KANAŁY - tylko właściciel")
+    .setDescription("Usuń wszystkie kanały - tylko właściciel")
 ];
 
 // =====================================================
@@ -404,186 +378,93 @@ client.once(Events.ClientReady, async () => {
   try {
     const guild = await client.guilds.fetch(config.GUILD_ID);
 
-    if (!guild) {
-      console.log("Nie znaleziono serwera.");
-      return;
-    }
-
     await guild.commands.set(
       commands.map(command => command.toJSON())
     );
 
     console.log("Komendy slash zostały zarejestrowane.");
-    console.log(`Serwer: ${guild.name}`);
   } catch (error) {
-    console.error(
-      "Błąd podczas rejestrowania komend:",
-      error
-    );
+    console.error("Błąd rejestracji komend:", error);
   }
 });
 
 // =====================================================
-// OCHRONA PRZED OBCYMI BOTAMI
+// NOWY UŻYTKOWNIK / ANTY BOT
 // =====================================================
 
 client.on(Events.GuildMemberAdd, async member => {
 
-  // Normalny użytkownik
+  // NORMALNY UŻYTKOWNIK
   if (!member.user.bot) {
+    const channel = member.guild.channels.cache.get(
+      config.WELCOME_CHANNEL_ID
+    );
 
-    if (isConfigured(config.WELCOME_CHANNEL_ID)) {
-      const channel =
-        member.guild.channels.cache.get(
-          config.WELCOME_CHANNEL_ID
-        );
+    if (channel) {
+      const embed = new EmbedBuilder()
+        .setColor(config.EMBED_COLOR)
+        .setTitle("👋 Witamy!")
+        .setDescription(
+          `Witaj ${member} na serwerze **${member.guild.name}**!\n\n` +
+          `Przejdź weryfikację, aby uzyskać dostęp do serwera.`
+        )
+        .setThumbnail(member.user.displayAvatarURL())
+        .setTimestamp();
 
-      if (channel) {
-        const embed = new EmbedBuilder()
-          .setColor(config.EMBED_COLOR)
-          .setTitle("👋 Witamy na serwerze!")
-          .setDescription(
-            `Witaj ${member} na **${member.guild.name}**!\n\n` +
-            `Aby uzyskać dostęp do serwera, przejdź weryfikację.`
-          )
-          .setThumbnail(member.user.displayAvatarURL())
-          .setTimestamp();
-
-        channel.send({
-          embeds: [embed]
-        }).catch(() => {});
-      }
+      channel.send({
+        embeds: [embed]
+      }).catch(() => {});
     }
 
     return;
   }
 
-  // ===================================================
-  // JEŻELI DOŁĄCZYŁ BOT
-  // ===================================================
-
-  console.log(
-    `⚠️ Nowy bot dołączył: ${member.user.tag}`
-  );
-
-  // Chwila na pojawienie się wpisu w Audit Log
+  // BOT
   setTimeout(async () => {
-
     try {
-      const auditLogs =
-        await member.guild.fetchAuditLogs({
-          type: AuditLogEvent.BotAdd,
-          limit: 10
-        });
+      const auditLogs = await member.guild.fetchAuditLogs({
+        type: AuditLogEvent.BotAdd,
+        limit: 10
+      });
 
       const entry = auditLogs.entries.find(
-        entry =>
-          entry.target &&
-          entry.target.id === member.id
+        log => log.target?.id === member.id
       );
 
       const executor = entry?.executor;
 
-      // Nie znaleziono osoby dodającej
-      if (!executor) {
-        await sendLog(
-          member.guild,
-          "⚠️ OCHRONA BOTÓW",
-          `Nie udało się ustalić, kto dodał bota **${member.user.tag}**.\n` +
-          `Bot pozostawiono na serwerze do ręcznej kontroli.`
-        );
+      if (!executor) return;
 
-        return;
-      }
-
-      // Właściciel może dodawać boty
+      // WŁAŚCICIEL MOŻE DODAĆ BOTA
       if (
         executor.id === config.OWNER_ID &&
-        member.guild.ownerId === executor.id
+        executor.id === member.guild.ownerId
       ) {
-
         await sendLog(
           member.guild,
-          "✅ Bot dodany przez właściciela",
-          `Bot: **${member.user.tag}**\n` +
-          `Dodany przez: <@${executor.id}>`
+          "✅ Dodano bota",
+          `Bot **${member.user.tag}** został dodany przez właściciela.`
         );
 
         return;
       }
 
-      // Ktoś inny dodał bota
       await sendLog(
         member.guild,
-        "🚨 OCHRONA ANTY-NUKE",
-        `Wykryto próbę dodania obcego bota!\n\n` +
-        `🤖 Bot: **${member.user.tag}**\n` +
-        `👤 Dodał: <@${executor.id}>\n\n` +
-        `Bot zostanie usunięty.`
+        "🚨 WYKRYTO OBCEGO BOTA",
+        `Bot: **${member.user.tag}**\n` +
+        `Dodany przez: <@${executor.id}>\n\n` +
+        `Bot został automatycznie usunięty.`
       );
 
-      try {
-        await member.kick(
-          "Anti-Nuke: bot dodany przez osobę inną niż właściciel serwera."
-        );
-
-        console.log(
-          `🚨 Usunięto obcego bota: ${member.user.tag}`
-        );
-      } catch (kickError) {
-        console.log(
-          "Nie udało się usunąć obcego bota:",
-          kickError.message
-        );
-      }
+      await member.kick(
+        "Anti-Nuke: bot nie został dodany przez właściciela"
+      ).catch(() => {});
 
     } catch (error) {
-
-      console.log(
-        "Błąd Anti-Nuke:",
-        error.message
-      );
-
-      await sendLog(
-        member.guild,
-        "🚨 BŁĄD OCHRONY",
-        `Nie udało się sprawdzić osoby, która dodała bota.\n\n` +
-        `Bot: **${member.user.tag}**\n` +
-        `Błąd: \`${error.message}\``
-      );
+      console.log("AntiBot error:", error.message);
     }
-
-  }, 2000);
-});
-
-// =====================================================
-// OPUSZCZENIE SERWERA
-// =====================================================
-
-client.on(Events.GuildMemberRemove, async member => {
-
-  await sendLog(
-    member.guild,
-    "🚪 Użytkownik opuścił serwer",
-    `Użytkownik: **${member.user.tag}**\n` +
-    `ID: \`${member.id}\``
-  );
-});
-
-// =====================================================
-// USUNIĘCIE WIADOMOŚCI
-// =====================================================
-
-client.on(Events.MessageDelete, async message => {
-
-  if (!message.guild) return;
-
-  await sendLog(
-    message.guild,
-    "🗑️ Usunięto wiadomość",
-    `Kanał: <#${message.channel?.id || "nieznany"}>\n` +
-    `Autor: **${message.author?.tag || "Nieznany"}**`
-  );
+  }, 1500);
 });
 
 // =====================================================
@@ -591,15 +472,14 @@ client.on(Events.MessageDelete, async message => {
 // =====================================================
 
 client.on(Events.MessageCreate, async message => {
-
   if (!message.guild) return;
   if (message.author.bot) return;
 
-  const content = message.content.trim();
+  const content = message.content.trim().toLowerCase();
 
   if (!content) return;
 
-  const key = `${message.author.id}:${content.toLowerCase()}`;
+  const key = `${message.author.id}:${content}`;
 
   const count = (spamCounter.get(key) || 0) + 1;
 
@@ -609,8 +489,7 @@ client.on(Events.MessageCreate, async message => {
     spamCounter.delete(key);
   }, 15000);
 
-  if (count === 5) {
-
+  if (count >= 5) {
     spamCounter.delete(key);
 
     try {
@@ -620,22 +499,10 @@ client.on(Events.MessageCreate, async message => {
       );
 
       await message.channel.send(
-        `⚠️ ${message.author}, otrzymujesz automatyczne wyciszenie za spam.`
+        `⚠️ ${message.author}, zostałeś wyciszony za spam.`
       );
 
-      await sendLog(
-        message.guild,
-        "🚨 AUTOMATYCZNY ANTYS-PAM",
-        `Użytkownik: <@${message.author.id}>\n` +
-        `Powód: 5 takich samych wiadomości.`
-      );
-
-    } catch (error) {
-      console.log(
-        "Błąd anty-spamu:",
-        error.message
-      );
-    }
+    } catch {}
   }
 });
 
@@ -644,37 +511,112 @@ client.on(Events.MessageCreate, async message => {
 // =====================================================
 
 client.on(Events.InteractionCreate, async interaction => {
-
   try {
 
     // =================================================
-    // SLASH COMMANDS
+    // KOMENDY SLASH
     // =================================================
 
     if (interaction.isChatInputCommand()) {
 
-      // ===============================================
+      // =================================================
+      // KÓŁKO I KRZYŻYK
+      // =================================================
+
+      if (interaction.commandName === "kolkoikrzyzyk") {
+
+        const opponent = interaction.options.getUser("gracz");
+
+        if (opponent.bot) {
+          return interaction.reply({
+            content: "❌ Nie możesz grać przeciwko botowi.",
+            ephemeral: true
+          });
+        }
+
+        if (opponent.id === interaction.user.id) {
+          return interaction.reply({
+            content: "❌ Nie możesz grać sam ze sobą 😂",
+            ephemeral: true
+          });
+        }
+
+        const gameId =
+          `${Date.now().toString(36)}${interaction.user.id.slice(-4)}`;
+
+        const board = Array(9).fill(null);
+
+        const game = {
+          id: gameId,
+
+          playerX: interaction.user.id,
+          playerO: opponent.id,
+
+          board,
+
+          turn: interaction.user.id,
+
+          channelId: interaction.channel.id,
+
+          messageId: null,
+
+          finished: false
+        };
+
+        const embed = new EmbedBuilder()
+          .setColor(config.EMBED_COLOR)
+          .setTitle("⭕ Kółko i krzyżyk ❌")
+          .setDescription(
+            `**Gracze:**\n\n` +
+            `❌ <@${interaction.user.id}>\n` +
+            `⭕ <@${opponent.id}>\n\n` +
+            `🎮 Ruch: <@${interaction.user.id}>\n\n` +
+            `⏱️ Gra zostanie automatycznie usunięta po **10 minutach**.`
+          )
+          .setFooter({
+            text: "Kliknij wybrane pole na planszy"
+          });
+
+        await interaction.reply({
+          embeds: [embed],
+          components: createTicTacToeButtons(
+            gameId,
+            board
+          )
+        });
+
+        const message = await interaction.fetchReply();
+
+        game.messageId = message.id;
+
+        ticTacToeGames.set(gameId, game);
+
+        // =================================================
+        // AUTOMATYCZNE USUNIĘCIE PO 10 MINUTACH
+        // =================================================
+
+        setTimeout(() => {
+          deleteTicTacToeGame(gameId);
+        }, 10 * 60 * 1000);
+
+        return;
+      }
+
+      // =================================================
       // WERYFIKACJA
-      // ===============================================
+      // =================================================
 
       if (interaction.commandName === "weryfikacja") {
 
         const embed = new EmbedBuilder()
           .setColor(config.EMBED_COLOR)
-          .setTitle("🛡️ WERYFIKACJA")
+          .setTitle("🛡️ Weryfikacja")
           .setDescription(
-            "**Witaj na serwerze!**\n\n" +
-            "Aby uzyskać dostęp do serwera, musisz przejść weryfikację.\n\n" +
-            "Kliknij przycisk poniżej i:\n" +
-            "• wpisz swój **nick Minecraft**,\n" +
-            "• rozwiąż proste działanie matematyczne,\n" +
-            "• po poprawnej odpowiedzi otrzymasz rangę zweryfikowanego.\n\n" +
-            "Twój nick Minecraft zostanie również ustawiony jako Twój pseudonim na Discordzie."
-          )
-          .setFooter({
-            text: "System weryfikacji"
-          })
-          .setTimestamp();
+            `Kliknij przycisk poniżej, aby przejść weryfikację.\n\n` +
+            `🎮 Podasz swój **nick Minecraft**.\n` +
+            `🧮 Rozwiążesz proste działanie matematyczne.\n` +
+            `✅ Po poprawnej weryfikacji otrzymasz rangę.`
+          );
 
         const row = new ActionRowBuilder()
           .addComponents(
@@ -693,44 +635,75 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
-      // ===============================================
-      // TICKET
-      // ===============================================
+      // =================================================
+      // NOWY PANEL TICKETÓW
+      // =================================================
 
       if (interaction.commandName === "ticket") {
 
         const embed = new EmbedBuilder()
           .setColor(config.EMBED_COLOR)
-          .setTitle("🎫 CENTRUM POMOCY")
+          .setTitle("🎫 Centrum Pomocy")
           .setDescription(
-            "Potrzebujesz pomocy? Utwórz ticket!\n\n" +
-            "Wybierz odpowiednią kategorię, a następnie uzupełnij formularz.\n\n" +
-            "**Dostępne kategorie:**\n" +
-            "🆘 Pomoc z wejściem na serwer\n" +
-            "🚨 Zgłoszenie gracza\n" +
-            "🎥 Media / Twórca\n" +
-            "🤝 Współpraca\n" +
-            "🐛 Zgłoszenie błędu\n" +
-            "🔨 Odwołanie od bana\n" +
-            "📩 Inne\n\n" +
-            "**Przygotuj:**\n" +
-            "• swój nick Minecraft\n" +
-            "• dokładny opis problemu\n" +
-            "• screen, jeśli jest potrzebny"
+            `Potrzebujesz pomocy administracji?\n\n` +
+            `Kliknij menu **Wybierz kategorię pomocy** poniżej i wybierz odpowiedni rodzaj zgłoszenia.\n\n` +
+            `Po wybraniu kategorii pojawi się formularz, który należy wypełnić możliwie dokładnie.`
           )
           .setFooter({
-            text: "Administracja odpowie tak szybko, jak to możliwe."
+            text: "Centrum Pomocy • Wybierz kategorię poniżej"
           })
           .setTimestamp();
 
-        const row = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId("create_ticket")
-              .setLabel("Utwórz ticket")
-              .setEmoji("🎫")
-              .setStyle(ButtonStyle.Primary)
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId("ticket_category_select")
+          .setPlaceholder("📂 Wybierz kategorię pomocy")
+          .addOptions(
+            {
+              label: "Pomoc z serwerem",
+              description: "Problem z wejściem lub działaniem serwera",
+              value: "ticket_help",
+              emoji: "🆘"
+            },
+            {
+              label: "Zgłoszenie gracza",
+              description: "Zgłoś gracza łamiącego regulamin",
+              value: "ticket_report",
+              emoji: "🚨"
+            },
+            {
+              label: "Media / Twórca",
+              description: "YouTube, TikTok, Twitch i inne",
+              value: "ticket_media",
+              emoji: "🎥"
+            },
+            {
+              label: "Współpraca",
+              description: "Propozycje współpracy",
+              value: "ticket_partner",
+              emoji: "🤝"
+            },
+            {
+              label: "Zgłoszenie błędu",
+              description: "Znalazłeś błąd na serwerze",
+              value: "ticket_bug",
+              emoji: "🐛"
+            },
+            {
+              label: "Odwołanie od bana",
+              description: "Chcesz odwołać się od kary",
+              value: "ticket_ban",
+              emoji: "🔨"
+            },
+            {
+              label: "Inna sprawa",
+              description: "Pozostałe sprawy",
+              value: "ticket_other",
+              emoji: "📩"
+            }
           );
+
+        const row = new ActionRowBuilder()
+          .addComponents(selectMenu);
 
         await interaction.reply({
           embeds: [embed],
@@ -740,9 +713,9 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
-      // ===============================================
+      // =================================================
       // CLEAR
-      // ===============================================
+      // =================================================
 
       if (interaction.commandName === "clear") {
 
@@ -752,60 +725,52 @@ client.on(Events.InteractionCreate, async interaction => {
           )
         ) {
           return interaction.reply({
-            content: "❌ Nie masz uprawnień do usuwania wiadomości.",
+            content: "❌ Nie masz uprawnień.",
             ephemeral: true
           });
         }
 
         const amount = interaction.options.getInteger("ilosc");
 
-        await interaction.channel.bulkDelete(
+        const deleted = await interaction.channel.bulkDelete(
           amount,
           true
         );
 
         await interaction.reply({
-          content: `🗑️ Usunięto **${amount}** wiadomości.`,
+          content: `🗑️ Usunięto **${deleted.size}** wiadomości.`,
           ephemeral: true
         });
-
-        await sendLog(
-          interaction.guild,
-          "🗑️ CLEAR",
-          `<@${interaction.user.id}> usunął **${amount}** wiadomości.`
-        );
 
         return;
       }
 
-      // ===============================================
+      // =================================================
       // BAN
-      // ===============================================
+      // =================================================
 
       if (interaction.commandName === "ban") {
 
         if (!isOwner(interaction)) {
           return interaction.reply({
-            content: "❌ Tylko właściciel serwera może używać tej komendy.",
+            content: "❌ Tylko właściciel może używać tej komendy.",
             ephemeral: true
           });
         }
 
-        const user =
-          interaction.options.getUser("uzytkownik");
+        const user = interaction.options.getUser("uzytkownik");
 
         const reason =
           interaction.options.getString("powod") ||
           "Brak powodu";
 
         const member =
-          await interaction.guild.members.fetch(
-            user.id
-          ).catch(() => null);
+          await interaction.guild.members.fetch(user.id)
+            .catch(() => null);
 
         if (!member) {
           return interaction.reply({
-            content: "❌ Nie znaleziono użytkownika na serwerze.",
+            content: "❌ Nie znaleziono użytkownika.",
             ephemeral: true
           });
         }
@@ -816,45 +781,35 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await interaction.reply({
           content:
-            `🔨 Zbanowano **${user.tag}**.\n` +
+            `🔨 Zbanowano **${user.tag}**\n` +
             `Powód: **${reason}**`
         });
-
-        await sendLog(
-          interaction.guild,
-          "🔨 BAN",
-          `Użytkownik: **${user.tag}**\n` +
-          `Właściciel: <@${interaction.user.id}>\n` +
-          `Powód: ${reason}`
-        );
 
         return;
       }
 
-      // ===============================================
+      // =================================================
       // KICK
-      // ===============================================
+      // =================================================
 
       if (interaction.commandName === "kick") {
 
         if (!isOwner(interaction)) {
           return interaction.reply({
-            content: "❌ Tylko właściciel serwera może używać tej komendy.",
+            content: "❌ Tylko właściciel może używać tej komendy.",
             ephemeral: true
           });
         }
 
-        const user =
-          interaction.options.getUser("uzytkownik");
+        const user = interaction.options.getUser("uzytkownik");
 
         const reason =
           interaction.options.getString("powod") ||
           "Brak powodu";
 
         const member =
-          await interaction.guild.members.fetch(
-            user.id
-          ).catch(() => null);
+          await interaction.guild.members.fetch(user.id)
+            .catch(() => null);
 
         if (!member) {
           return interaction.reply({
@@ -866,41 +821,30 @@ client.on(Events.InteractionCreate, async interaction => {
         await member.kick(reason);
 
         await interaction.reply({
-          content:
-            `👢 Wyrzucono **${user.tag}**.\n` +
-            `Powód: **${reason}**`
+          content: `👢 Wyrzucono **${user.tag}**.`
         });
-
-        await sendLog(
-          interaction.guild,
-          "👢 KICK",
-          `Użytkownik: **${user.tag}**\n` +
-          `Powód: ${reason}`
-        );
 
         return;
       }
 
-      // ===============================================
+      // =================================================
       // MUTE
-      // ===============================================
+      // =================================================
 
       if (interaction.commandName === "mute") {
 
         if (!isOwner(interaction)) {
           return interaction.reply({
-            content: "❌ Tylko właściciel serwera może używać tej komendy.",
+            content: "❌ Tylko właściciel może używać tej komendy.",
             ephemeral: true
           });
         }
 
-        const user =
-          interaction.options.getUser("uzytkownik");
+        const user = interaction.options.getUser("uzytkownik");
 
         const member =
-          await interaction.guild.members.fetch(
-            user.id
-          ).catch(() => null);
+          await interaction.guild.members.fetch(user.id)
+            .catch(() => null);
 
         if (!member) {
           return interaction.reply({
@@ -915,40 +859,30 @@ client.on(Events.InteractionCreate, async interaction => {
         );
 
         await interaction.reply({
-          content:
-            `🔇 **${user.tag}** został wyciszony na 10 minut.`
+          content: `🔇 Wyciszono **${user.tag}** na 10 minut.`
         });
-
-        await sendLog(
-          interaction.guild,
-          "🔇 MUTE",
-          `Użytkownik: **${user.tag}**\n` +
-          `Nałożony przez: <@${interaction.user.id}>`
-        );
 
         return;
       }
 
-      // ===============================================
+      // =================================================
       // UNMUTE
-      // ===============================================
+      // =================================================
 
       if (interaction.commandName === "unmute") {
 
         if (!isOwner(interaction)) {
           return interaction.reply({
-            content: "❌ Tylko właściciel serwera może używać tej komendy.",
+            content: "❌ Tylko właściciel może używać tej komendy.",
             ephemeral: true
           });
         }
 
-        const user =
-          interaction.options.getUser("uzytkownik");
+        const user = interaction.options.getUser("uzytkownik");
 
         const member =
-          await interaction.guild.members.fetch(
-            user.id
-          ).catch(() => null);
+          await interaction.guild.members.fetch(user.id)
+            .catch(() => null);
 
         if (!member) {
           return interaction.reply({
@@ -957,28 +891,24 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        await member.timeout(
-          null,
-          "Unmute"
-        );
+        await member.timeout(null);
 
         await interaction.reply({
-          content:
-            `🔊 Zdjęto wyciszenie z **${user.tag}**.`
+          content: `🔊 Zdjęto wyciszenie z **${user.tag}**.`
         });
 
         return;
       }
 
-      // ===============================================
+      // =================================================
       // SAY
-      // ===============================================
+      // =================================================
 
       if (interaction.commandName === "say") {
 
         if (!isOwner(interaction)) {
           return interaction.reply({
-            content: "❌ Tylko właściciel serwera może używać tej komendy.",
+            content: "❌ Tylko właściciel może używać tej komendy.",
             ephemeral: true
           });
         }
@@ -987,7 +917,7 @@ client.on(Events.InteractionCreate, async interaction => {
           interaction.options.getString("tekst");
 
         await interaction.reply({
-          content: "✅ Wysłano wiadomość.",
+          content: "✅ Wysłano.",
           ephemeral: true
         });
 
@@ -996,9 +926,9 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
-      // ===============================================
-      // SERVERINFO
-      // ===============================================
+      // =================================================
+      // SERVER INFO
+      // =================================================
 
       if (interaction.commandName === "serverinfo") {
 
@@ -1029,11 +959,7 @@ client.on(Events.InteractionCreate, async interaction => {
               inline: true
             }
           )
-          .setThumbnail(
-            guild.iconURL({
-              dynamic: true
-            })
-          )
+          .setThumbnail(guild.iconURL())
           .setTimestamp();
 
         await interaction.reply({
@@ -1043,111 +969,65 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
-      // ===============================================
+      // =================================================
       // BACKUP
-      // ===============================================
+      // =================================================
 
       if (interaction.commandName === "backup") {
 
         if (!isOwner(interaction)) {
           return interaction.reply({
-            content: "❌ Tylko właściciel serwera może tworzyć backup.",
+            content: "❌ Tylko właściciel może zrobić backup.",
             ephemeral: true
           });
         }
 
-        await interaction.deferReply({
+        const backup = await createBackup(interaction.guild);
+
+        await interaction.reply({
+          content:
+            `✅ Backup został zapisany.\n` +
+            `Kanały: **${backup.channels.length}**`,
           ephemeral: true
         });
-
-        const backup =
-          await createBackup(interaction.guild);
-
-        await interaction.editReply(
-          `✅ Backup został utworzony!\n\n` +
-          `📁 Kanały zapisane: **${backup.channels.length}**\n` +
-          `🕐 Data: <t:${Math.floor(Date.now() / 1000)}:F>`
-        );
-
-        await sendLog(
-          interaction.guild,
-          "💾 BACKUP",
-          `Właściciel utworzył backup serwera.\n` +
-          `Liczba kanałów: **${backup.channels.length}**`
-        );
 
         return;
       }
 
-      // ===============================================
-      // RESTORE
-      // ===============================================
-
-      if (interaction.commandName === "restore") {
-
-        if (!isOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ Tylko właściciel serwera może przywracać backup.",
-            ephemeral: true
-          });
-        }
-
-        await interaction.deferReply({
-          ephemeral: true
-        });
-
-        await restoreBackup(interaction.guild);
-
-        await interaction.editReply(
-          "✅ Rozpoczęto przywracanie kanałów z backupu."
-        );
-
-        await sendLog(
-          interaction.guild,
-          "♻️ RESTORE",
-          `Właściciel rozpoczął przywracanie kanałów z backupu.`
-        );
-
-        return;
-      }
-
-      // ===============================================
-      // USUŃ KANAŁY
-      // ===============================================
+      // =================================================
+      // USUŃ WSZYSTKIE KANAŁY
+      // =================================================
 
       if (interaction.commandName === "usun-kanaly") {
 
         if (!isOwner(interaction)) {
           return interaction.reply({
             content:
-              "🚫 Ta komenda jest dostępna WYŁĄCZNIE dla właściciela serwera.",
+              "🚫 Ta komenda jest tylko dla właściciela serwera.",
             ephemeral: true
           });
         }
 
         const embed = new EmbedBuilder()
           .setColor(0xff0000)
-          .setTitle("🚨 USUWANIE KANAŁÓW")
+          .setTitle("🚨 USUNĄĆ WSZYSTKIE KANAŁY?")
           .setDescription(
-            "**UWAGA! Ta operacja jest bardzo niebezpieczna.**\n\n" +
-            "Przed usunięciem kanałów bot automatycznie utworzy backup.\n\n" +
-            "Po kliknięciu potwierdzenia będziesz musiał wpisać:\n\n" +
-            `\`${config.DELETE_CONFIRM_TEXT}\`\n\n` +
-            "Dopiero wtedy kanały zostaną usunięte."
+            `Ta operacja usunie **wszystkie kanały na serwerze**.\n\n` +
+            `Przed usunięciem bot utworzy backup.\n\n` +
+            `Kliknij przycisk poniżej, jeśli na pewno chcesz kontynuować.`
           );
 
         const row = new ActionRowBuilder()
           .addComponents(
             new ButtonBuilder()
-              .setCustomId("confirm_delete_channels")
-              .setLabel("Kontynuuj")
-              .setEmoji("⚠️")
+              .setCustomId("delete_all_channels_confirm")
+              .setLabel("Usuń wszystkie kanały")
+              .setEmoji("🗑️")
               .setStyle(ButtonStyle.Danger),
 
             new ButtonBuilder()
-              .setCustomId("cancel_delete_channels")
+              .setCustomId("delete_all_channels_cancel")
               .setLabel("Anuluj")
-              .setEmoji("❌")
               .setStyle(ButtonStyle.Secondary)
           );
 
@@ -1162,97 +1042,17 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     // =================================================
-    // BUTTONY
+    // SELECT MENU - TICKETY
     // =================================================
 
-    if (interaction.isButton()) {
+    if (interaction.isStringSelectMenu()) {
 
-      // ===============================================
-      // WERYFIKACJA
-      // ===============================================
+      if (
+        interaction.customId ===
+        "ticket_category_select"
+      ) {
 
-      if (interaction.customId === "verify") {
-
-        if (
-          !isConfigured(config.VERIFIED_ROLE_ID)
-        ) {
-          return interaction.reply({
-            content:
-              "❌ Rola weryfikacyjna nie jest skonfigurowana.",
-            ephemeral: true
-          });
-        }
-
-        const member = interaction.member;
-
-        if (
-          member.roles.cache.has(
-            config.VERIFIED_ROLE_ID
-          )
-        ) {
-          return interaction.reply({
-            content:
-              "✅ Jesteś już zweryfikowany.",
-            ephemeral: true
-          });
-        }
-
-        const number1 =
-          Math.floor(Math.random() * 20) + 1;
-
-        const number2 =
-          Math.floor(Math.random() * 20) + 1;
-
-        const answer = number1 + number2;
-
-        verificationQuestions.set(
-          interaction.user.id,
-          answer
-        );
-
-        const modal =
-          new ModalBuilder()
-            .setCustomId("verification_modal")
-            .setTitle("🛡️ Weryfikacja");
-
-        const nickInput =
-          new TextInputBuilder()
-            .setCustomId("minecraft_nick")
-            .setLabel("Twój nick Minecraft")
-            .setPlaceholder("np. Steve123")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMinLength(3)
-            .setMaxLength(16);
-
-        const mathInput =
-          new TextInputBuilder()
-            .setCustomId("math_answer")
-            .setLabel(`Ile to ${number1} + ${number2}?`)
-            .setPlaceholder("Wpisz wynik")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMaxLength(5);
-
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            nickInput
-          ),
-          new ActionRowBuilder().addComponents(
-            mathInput
-          )
-        );
-
-        await interaction.showModal(modal);
-
-        return;
-      }
-
-      // ===============================================
-      // TICKET
-      // ===============================================
-
-      if (interaction.customId === "create_ticket") {
+        const ticketType = interaction.values[0];
 
         const existingTicket =
           interaction.guild.channels.cache.find(
@@ -1269,133 +1069,288 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        const row = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId("ticket_help")
-              .setLabel("Pomoc")
-              .setEmoji("🆘")
-              .setStyle(ButtonStyle.Primary),
+        const categoryNames = {
+          ticket_help: "Pomoc z serwerem",
+          ticket_report: "Zgłoszenie gracza",
+          ticket_media: "Media / Twórca",
+          ticket_partner: "Współpraca",
+          ticket_bug: "Zgłoszenie błędu",
+          ticket_ban: "Odwołanie od bana",
+          ticket_other: "Inna sprawa"
+        };
 
-            new ButtonBuilder()
-              .setCustomId("ticket_report")
-              .setLabel("Gracz")
-              .setEmoji("🚨")
-              .setStyle(ButtonStyle.Danger),
+        const category =
+          categoryNames[ticketType] ||
+          "Ticket";
 
-            new ButtonBuilder()
-              .setCustomId("ticket_media")
-              .setLabel("Media")
-              .setEmoji("🎥")
-              .setStyle(ButtonStyle.Secondary),
+        const modal = new ModalBuilder()
+          .setCustomId(
+            `ticket_modal_${ticketType}`
+          )
+          .setTitle(category);
 
-            new ButtonBuilder()
-              .setCustomId("ticket_partner")
-              .setLabel("Współpraca")
-              .setEmoji("🤝")
-              .setStyle(ButtonStyle.Secondary)
+        const nick = new TextInputBuilder()
+          .setCustomId("ticket_nick")
+          .setLabel("Twój nick Minecraft")
+          .setPlaceholder("np. Steve123")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(16);
+
+        const problem = new TextInputBuilder()
+          .setCustomId("ticket_problem")
+          .setLabel("Opisz swoją sprawę")
+          .setPlaceholder(
+            "Napisz dokładnie, w czym potrzebujesz pomocy..."
+          )
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(1000);
+
+        const screenshot = new TextInputBuilder()
+          .setCustomId("ticket_screen")
+          .setLabel("Screen / dodatkowe informacje")
+          .setPlaceholder(
+            "Opcjonalnie możesz wkleić link do screena"
+          )
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+          .setMaxLength(500);
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(nick),
+          new ActionRowBuilder().addComponents(problem),
+          new ActionRowBuilder().addComponents(screenshot)
+        );
+
+        await interaction.showModal(modal);
+
+        return;
+      }
+    }
+
+    // =================================================
+    // BUTTONY
+    // =================================================
+
+    if (interaction.isButton()) {
+
+      // =================================================
+      // KÓŁKO I KRZYŻYK - RUCH
+      // =================================================
+
+      if (interaction.customId.startsWith("ttt_")) {
+
+        const parts = interaction.customId.split("_");
+
+        const gameId = parts[1];
+        const position = Number(parts[2]);
+
+        const game = ticTacToeGames.get(gameId);
+
+        if (!game) {
+          return interaction.reply({
+            content:
+              "❌ Ta gra już wygasła.",
+            ephemeral: true
+          });
+        }
+
+        if (game.finished) {
+          return interaction.reply({
+            content:
+              "❌ Ta gra już się zakończyła.",
+            ephemeral: true
+          });
+        }
+
+        if (
+          interaction.user.id !== game.playerX &&
+          interaction.user.id !== game.playerO
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Nie bierzesz udziału w tej grze.",
+            ephemeral: true
+          });
+        }
+
+        if (interaction.user.id !== game.turn) {
+          return interaction.reply({
+            content:
+              "⏳ To nie jest teraz Twoja kolej.",
+            ephemeral: true
+          });
+        }
+
+        if (game.board[position]) {
+          return interaction.reply({
+            content:
+              "❌ To pole jest już zajęte.",
+            ephemeral: true
+          });
+        }
+
+        const mark =
+          interaction.user.id === game.playerX
+            ? "X"
+            : "O";
+
+        game.board[position] = mark;
+
+        const winner = getTicTacToeWinner(
+          game.board
+        );
+
+        // =================================================
+        // WYGRANA
+        // =================================================
+
+        if (winner) {
+
+          game.finished = true;
+
+          const winnerId =
+            winner === "X"
+              ? game.playerX
+              : game.playerO;
+
+          const embed = new EmbedBuilder()
+            .setColor(config.EMBED_COLOR)
+            .setTitle("🏆 Koniec gry!")
+            .setDescription(
+              `🎉 Wygrał <@${winnerId}>!\n\n` +
+              `❌ <@${game.playerX}>\n` +
+              `⭕ <@${game.playerO}>\n\n` +
+              `🗑️ Wiadomość z grą zostanie usunięta po 10 minutach od rozpoczęcia gry.`
+            );
+
+          await interaction.update({
+            embeds: [embed],
+            components: createTicTacToeButtons(
+              gameId,
+              game.board,
+              true
+            )
+          });
+
+          return;
+        }
+
+        // =================================================
+        // REMIS
+        // =================================================
+
+        if (
+          game.board.every(field => field !== null)
+        ) {
+
+          game.finished = true;
+
+          const embed = new EmbedBuilder()
+            .setColor(config.EMBED_COLOR)
+            .setTitle("🤝 Remis!")
+            .setDescription(
+              `Nikt nie wygrał.\n\n` +
+              `❌ <@${game.playerX}>\n` +
+              `⭕ <@${game.playerO}>`
+            );
+
+          await interaction.update({
+            embeds: [embed],
+            components: createTicTacToeButtons(
+              gameId,
+              game.board,
+              true
+            )
+          });
+
+          return;
+        }
+
+        // =================================================
+        // NASTĘPNA TURA
+        // =================================================
+
+        game.turn =
+          game.turn === game.playerX
+            ? game.playerO
+            : game.playerX;
+
+        const embed = new EmbedBuilder()
+          .setColor(config.EMBED_COLOR)
+          .setTitle("⭕ Kółko i krzyżyk ❌")
+          .setDescription(
+            `**Gracze:**\n\n` +
+            `❌ <@${game.playerX}>\n` +
+            `⭕ <@${game.playerO}>\n\n` +
+            `🎮 Ruch: <@${game.turn}>\n\n` +
+            `⏱️ Gra zostanie usunięta po **10 minutach**.`
           );
 
-        const row2 = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId("ticket_bug")
-              .setLabel("Bug")
-              .setEmoji("🐛")
-              .setStyle(ButtonStyle.Secondary),
-
-            new ButtonBuilder()
-              .setCustomId("ticket_ban")
-              .setLabel("Odwołanie")
-              .setEmoji("🔨")
-              .setStyle(ButtonStyle.Secondary),
-
-            new ButtonBuilder()
-              .setCustomId("ticket_other")
-              .setLabel("Inne")
-              .setEmoji("📩")
-              .setStyle(ButtonStyle.Secondary)
-          );
-
-        await interaction.reply({
-          content:
-            "🎫 **Wybierz kategorię swojego zgłoszenia:**",
-          components: [row, row2],
-          ephemeral: true
+        await interaction.update({
+          embeds: [embed],
+          components: createTicTacToeButtons(
+            gameId,
+            game.board
+          )
         });
 
         return;
       }
 
-      // ===============================================
-      // KATEGORIE TICKETÓW
-      // ===============================================
+      // =================================================
+      // WERYFIKACJA
+      // =================================================
 
-      const ticketCategories = {
-        ticket_help: "Pomoc z wejściem na serwer",
-        ticket_report: "Zgłoszenie gracza",
-        ticket_media: "Media / Twórca",
-        ticket_partner: "Współpraca",
-        ticket_bug: "Zgłoszenie błędu",
-        ticket_ban: "Odwołanie od bana",
-        ticket_other: "Inne"
-      };
+      if (interaction.customId === "verify") {
 
-      if (
-        ticketCategories[interaction.customId]
-      ) {
+        if (
+          interaction.member.roles.cache.has(
+            config.VERIFIED_ROLE_ID
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "✅ Jesteś już zweryfikowany.",
+            ephemeral: true
+          });
+        }
 
-        const category =
-          ticketCategories[interaction.customId];
+        const a =
+          Math.floor(Math.random() * 15) + 1;
 
-        const modal =
-          new ModalBuilder()
-            .setCustomId(
-              `ticket_modal_${interaction.customId}`
-            )
-            .setTitle("🎫 Utworzenie ticketu");
+        const b =
+          Math.floor(Math.random() * 15) + 1;
 
-        const nickInput =
-          new TextInputBuilder()
-            .setCustomId("ticket_nick")
-            .setLabel("Twój nick Minecraft")
-            .setPlaceholder("Wpisz swój nick Minecraft")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMaxLength(16);
+        verificationQuestions.set(
+          interaction.user.id,
+          a + b
+        );
 
-        const problemInput =
-          new TextInputBuilder()
-            .setCustomId("ticket_problem")
-            .setLabel("Opisz dokładnie problem")
-            .setPlaceholder(
-              "Napisz dokładnie, w czym potrzebujesz pomocy..."
-            )
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true)
-            .setMaxLength(1000);
+        const modal = new ModalBuilder()
+          .setCustomId("verification_modal")
+          .setTitle("🛡️ Weryfikacja");
 
-        const screenInput =
-          new TextInputBuilder()
-            .setCustomId("ticket_screen")
-            .setLabel("Screen / dodatkowe informacje")
-            .setPlaceholder(
-              "Opcjonalnie - możesz wkleić link do screena"
-            )
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(false)
-            .setMaxLength(500);
+        const nick = new TextInputBuilder()
+          .setCustomId("minecraft_nick")
+          .setLabel("Nick Minecraft")
+          .setPlaceholder("Twój nick Minecraft")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMinLength(3)
+          .setMaxLength(16);
+
+        const math = new TextInputBuilder()
+          .setCustomId("math_answer")
+          .setLabel(`Ile to ${a} + ${b}?`)
+          .setPlaceholder("Wpisz wynik")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
 
         modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            nickInput
-          ),
-          new ActionRowBuilder().addComponents(
-            problemInput
-          ),
-          new ActionRowBuilder().addComponents(
-            screenInput
-          )
+          new ActionRowBuilder().addComponents(nick),
+          new ActionRowBuilder().addComponents(math)
         );
 
         await interaction.showModal(modal);
@@ -1403,13 +1358,11 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
-      // ===============================================
-      // CLAIM TICKET
-      // ===============================================
+      // =================================================
+      // CLAIM
+      // =================================================
 
-      if (
-        interaction.customId === "claim_ticket"
-      ) {
+      if (interaction.customId === "claim_ticket") {
 
         if (
           !memberCanManageTicket(
@@ -1418,41 +1371,33 @@ client.on(Events.InteractionCreate, async interaction => {
         ) {
           return interaction.reply({
             content:
-              "❌ Nie masz uprawnień do przejęcia tego ticketu.",
+              "❌ Nie masz uprawnień.",
             ephemeral: true
           });
         }
 
         await interaction.reply({
           content:
-            `👤 Ticket został przejęty przez <@${interaction.user.id}>.`
+            `👤 Ticket został przejęty przez ${interaction.user}.`
         });
-
-        await sendLog(
-          interaction.guild,
-          "🎫 TICKET PRZEJĘTY",
-          `Ticket: ${interaction.channel}\n` +
-          `Przejął: <@${interaction.user.id}>`
-        );
 
         return;
       }
 
-      // ===============================================
-      // CLOSE TICKET
-      // ===============================================
+      // =================================================
+      // CLOSE
+      // =================================================
 
-      if (
-        interaction.customId === "close_ticket"
-      ) {
+      if (interaction.customId === "close_ticket") {
 
-        if (
-          !memberCanManageTicket(
-            interaction.member
-          ) &&
-          interaction.channel.name !==
-            `ticket-${interaction.user.id}`
-        ) {
+        const isStaff =
+          memberCanManageTicket(interaction.member);
+
+        const isCreator =
+          interaction.channel.name ===
+          `ticket-${interaction.user.id}`;
+
+        if (!isStaff && !isCreator) {
           return interaction.reply({
             content:
               "❌ Nie możesz zamknąć tego ticketu.",
@@ -1462,15 +1407,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await interaction.reply({
           content:
-            "🔒 Ticket zostanie zamknięty za 3 sekundy."
+            "🔒 Ticket zostanie usunięty za 3 sekundy."
         });
-
-        await sendLog(
-          interaction.guild,
-          "🔒 TICKET ZAMKNIĘTY",
-          `Kanał: **${interaction.channel.name}**\n` +
-          `Zamknął: <@${interaction.user.id}>`
-        );
 
         setTimeout(() => {
           interaction.channel.delete().catch(() => {});
@@ -1479,79 +1417,65 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
-      // ===============================================
-      // USUWANIE KANAŁÓW - KONTYNUUJ
-      // ===============================================
+      // =================================================
+      // USUWANIE WSZYSTKICH KANAŁÓW
+      // =================================================
 
       if (
         interaction.customId ===
-        "confirm_delete_channels"
+        "delete_all_channels_confirm"
       ) {
 
         if (!isOwner(interaction)) {
-          return interaction.update({
+          return interaction.reply({
             content:
-              "🚫 Nie masz prawa wykonać tej operacji.",
-            embeds: [],
-            components: []
-          });
-        }
-
-        const modal =
-          new ModalBuilder()
-            .setCustomId("delete_channels_modal")
-            .setTitle("⚠️ Potwierdzenie usuwania");
-
-        const input =
-          new TextInputBuilder()
-            .setCustomId("delete_confirmation")
-            .setLabel(
-              `Wpisz: ${config.DELETE_CONFIRM_TEXT}`
-            )
-            .setPlaceholder(
-              config.DELETE_CONFIRM_TEXT
-            )
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMaxLength(50);
-
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            input
-          )
-        );
-
-        await interaction.showModal(modal);
-
-        return;
-      }
-
-      // ===============================================
-      // USUWANIE KANAŁÓW - ANULUJ
-      // ===============================================
-
-      if (
-        interaction.customId ===
-        "cancel_delete_channels"
-      ) {
-
-        if (!isOwner(interaction)) {
-          return interaction.update({
-            content:
-              "🚫 Nie masz prawa wykonać tej operacji.",
-            embeds: [],
-            components: []
+              "🚫 Tylko właściciel może to zrobić.",
+            ephemeral: true
           });
         }
 
         await interaction.update({
           content:
-            "✅ Operacja została anulowana.",
+            "⚠️ Tworzę backup i usuwam wszystkie kanały...",
           embeds: [],
           components: []
         });
 
+        try {
+          await createBackup(interaction.guild);
+        } catch (error) {
+          return;
+        }
+
+        const channels =
+          [...interaction.guild.channels.cache.values()];
+
+        for (const channel of channels) {
+          try {
+            await channel.delete(
+              "Usunięcie wszystkich kanałów przez właściciela"
+            );
+          } catch (error) {
+            console.log(
+              `Nie usunięto ${channel.name}:`,
+              error.message
+            );
+          }
+        }
+
         return;
+      }
+
+      if (
+        interaction.customId ===
+        "delete_all_channels_cancel"
+      ) {
+        return interaction.update({
+          content:
+            "✅ Usuwanie kanałów anulowane.",
+          embeds: [],
+          components: []
+        });
       }
     }
 
@@ -1561,9 +1485,9 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isModalSubmit()) {
 
-      // ===============================================
+      // =================================================
       // WERYFIKACJA
-      // ===============================================
+      // =================================================
 
       if (
         interaction.customId ===
@@ -1580,31 +1504,21 @@ client.on(Events.InteractionCreate, async interaction => {
             "math_answer"
           );
 
-        const correctAnswer =
+        const correct =
           verificationQuestions.get(
             interaction.user.id
           );
 
-        if (!correctAnswer) {
-          return interaction.reply({
-            content:
-              "❌ Weryfikacja wygasła. Kliknij przycisk ponownie.",
-            ephemeral: true
-          });
-        }
-
         if (
-          Number(math) !==
-          Number(correctAnswer)
+          Number(math) !== Number(correct)
         ) {
-
           verificationQuestions.delete(
             interaction.user.id
           );
 
           return interaction.reply({
             content:
-              "❌ Niepoprawny wynik działania. Spróbuj ponownie.",
+              "❌ Niepoprawny wynik.",
             ephemeral: true
           });
         }
@@ -1612,9 +1526,6 @@ client.on(Events.InteractionCreate, async interaction => {
         verificationQuestions.delete(
           interaction.user.id
         );
-
-        const member =
-          interaction.member;
 
         const role =
           interaction.guild.roles.cache.get(
@@ -1629,49 +1540,26 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        await member.roles.add(
-          role,
-          "Poprawna weryfikacja"
-        );
+        await interaction.member.roles.add(role);
 
-        // Zmiana pseudonimu na nick Minecraft
         try {
-
-          await member.setNickname(
-            nick,
-            "Weryfikacja Minecraft"
+          await interaction.member.setNickname(
+            nick
           );
-
-        } catch (error) {
-
-          console.log(
-            "Nie udało się zmienić pseudonimu:",
-            error.message
-          );
-        }
+        } catch {}
 
         await interaction.reply({
           content:
-            `✅ **Weryfikacja zakończona pomyślnie!**\n\n` +
-            `🎮 Nick Minecraft: **${nick}**\n` +
-            `🛡️ Otrzymałeś rangę: ${role}\n` +
-            `✏️ Twój pseudonim został ustawiony na **${nick}**.`,
+            `✅ Zweryfikowano!\n🎮 Twój nick: **${nick}**`,
           ephemeral: true
         });
-
-        await sendLog(
-          interaction.guild,
-          "✅ NOWA WERYFIKACJA",
-          `Użytkownik: <@${interaction.user.id}>\n` +
-          `Nick Minecraft: **${nick}**`
-        );
 
         return;
       }
 
-      // ===============================================
-      // TICKET MODAL
-      // ===============================================
+      // =================================================
+      // TWORZENIE TICKETU
+      // =================================================
 
       if (
         interaction.customId.startsWith(
@@ -1685,18 +1573,19 @@ client.on(Events.InteractionCreate, async interaction => {
             ""
           );
 
-        const categories = {
-          ticket_help: "Pomoc z wejściem na serwer",
+        const categoryNames = {
+          ticket_help: "Pomoc z serwerem",
           ticket_report: "Zgłoszenie gracza",
           ticket_media: "Media / Twórca",
           ticket_partner: "Współpraca",
           ticket_bug: "Zgłoszenie błędu",
           ticket_ban: "Odwołanie od bana",
-          ticket_other: "Inne"
+          ticket_other: "Inna sprawa"
         };
 
         const category =
-          categories[ticketType] || "Inne";
+          categoryNames[ticketType] ||
+          "Inna sprawa";
 
         const nick =
           interaction.fields.getTextInputValue(
@@ -1735,6 +1624,7 @@ client.on(Events.InteractionCreate, async interaction => {
               PermissionsBitField.Flags.ViewChannel
             ]
           },
+
           {
             id: interaction.user.id,
             allow: [
@@ -1748,172 +1638,93 @@ client.on(Events.InteractionCreate, async interaction => {
         for (
           const roleId of getTicketStaffRoles()
         ) {
-
           permissionOverwrites.push({
             id: roleId,
             allow: [
               PermissionsBitField.Flags.ViewChannel,
               PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ReadMessageHistory,
-              PermissionsBitField.Flags.ManageChannels
+              PermissionsBitField.Flags.ReadMessageHistory
             ]
           });
         }
 
-        const channel =
+        const ticketChannel =
           await interaction.guild.channels.create({
             name:
               `ticket-${interaction.user.id}`,
-            type: ChannelType.GuildText,
+
+            type:
+              ChannelType.GuildText,
+
             parent:
               config.TICKET_CATEGORY_ID,
+
             permissionOverwrites
           });
 
-        const embed =
-          new EmbedBuilder()
-            .setColor(config.EMBED_COLOR)
-            .setTitle("🎫 NOWY TICKET")
-            .setDescription(
-              `Witaj ${interaction.user}!\n\n` +
-              `Administracja zajmie się Twoim zgłoszeniem.\n\n` +
-              `**Kategoria:**\n${category}\n\n` +
-              `**Nick Minecraft:**\n${nick}\n\n` +
-              `**Opis:**\n${problem}\n\n` +
-              `**Screen / dodatkowe informacje:**\n${screen}`
-            )
-            .setFooter({
-              text:
-                "Nie oznaczaj administracji bez potrzeby."
-            })
-            .setTimestamp();
+        const embed = new EmbedBuilder()
+          .setColor(config.EMBED_COLOR)
+          .setTitle("🎫 Nowy Ticket")
+          .setDescription(
+            `Witaj ${interaction.user}!\n\n` +
 
-        const buttons =
-          new ActionRowBuilder()
-            .addComponents(
-              new ButtonBuilder()
-                .setCustomId("claim_ticket")
-                .setLabel("Przejmij")
-                .setEmoji("👤")
-                .setStyle(ButtonStyle.Primary),
+            `📂 **Kategoria**\n` +
+            `${category}\n\n` +
 
-              new ButtonBuilder()
-                .setCustomId("close_ticket")
-                .setLabel("Zamknij")
-                .setEmoji("🔒")
-                .setStyle(ButtonStyle.Danger)
-            );
+            `🎮 **Nick Minecraft**\n` +
+            `${nick}\n\n` +
 
-        await channel.send({
+            `📝 **Opis sprawy**\n` +
+            `${problem}\n\n` +
+
+            `🖼️ **Screen / dodatkowe informacje**\n` +
+            `${screen}`
+          )
+          .setFooter({
+            text:
+              "Administracja odpowie tak szybko, jak to możliwe."
+          })
+          .setTimestamp();
+
+        const row = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId("claim_ticket")
+              .setLabel("Przejmij ticket")
+              .setEmoji("👤")
+              .setStyle(ButtonStyle.Primary),
+
+            new ButtonBuilder()
+              .setCustomId("close_ticket")
+              .setLabel("Zamknij ticket")
+              .setEmoji("🔒")
+              .setStyle(ButtonStyle.Danger)
+          );
+
+        const staffMentions =
+          getTicketStaffRoles()
+            .map(id => `<@&${id}>`)
+            .join(" ");
+
+        await ticketChannel.send({
           content:
-            `${interaction.user} ${getTicketStaffRoles()
-              .map(id => `<@&${id}>`)
-              .join(" ")}`,
+            `${interaction.user} ${staffMentions}`,
           embeds: [embed],
-          components: [buttons]
+          components: [row]
         });
 
         await interaction.reply({
           content:
-            `✅ Ticket został utworzony: ${channel}`,
+            `✅ Ticket utworzony: ${ticketChannel}`,
           ephemeral: true
         });
 
         await sendLog(
           interaction.guild,
-          "🎫 NOWY TICKET",
-          `Użytkownik: <@${interaction.user.id}>\n` +
+          "🎫 Nowy ticket",
+          `Użytkownik: ${interaction.user}\n` +
           `Kategoria: **${category}**\n` +
-          `Kanał: ${channel}`
-        );
-
-        return;
-      }
-
-      // ===============================================
-      // POTWIERDZENIE USUWANIA KANAŁÓW
-      // ===============================================
-
-      if (
-        interaction.customId ===
-        "delete_channels_modal"
-      ) {
-
-        if (!isOwner(interaction)) {
-          return interaction.reply({
-            content:
-              "🚫 Nie masz prawa wykonać tej operacji.",
-            ephemeral: true
-          });
-        }
-
-        const confirmation =
-          interaction.fields.getTextInputValue(
-            "delete_confirmation"
-          );
-
-        if (
-          confirmation !==
-          config.DELETE_CONFIRM_TEXT
-        ) {
-          return interaction.reply({
-            content:
-              "❌ Niepoprawne potwierdzenie. Kanały NIE zostały usunięte.",
-            ephemeral: true
-          });
-        }
-
-        await interaction.deferReply({
-          ephemeral: true
-        });
-
-        // Automatyczny backup
-        try {
-          await createBackup(
-            interaction.guild
-          );
-        } catch (error) {
-          return interaction.editReply(
-            "❌ Nie udało się utworzyć backupu. Operacja została przerwana."
-          );
-        }
-
-        const channels = [
-          ...interaction.guild.channels.cache.values()
-        ];
-
-        let deleted = 0;
-
-        for (const channel of channels) {
-
-          try {
-
-            await channel.delete(
-              "Owner command: usuwanie kanałów"
-            );
-
-            deleted++;
-
-          } catch (error) {
-
-            console.log(
-              `Nie udało się usunąć ${channel.name}:`,
-              error.message
-            );
-          }
-        }
-
-        await interaction.editReply(
-          `🚨 Operacja zakończona.\n\n` +
-          `🗑️ Usunięto kanałów: **${deleted}**\n` +
-          `💾 Backup został zapisany przed usunięciem.`
-        );
-
-        await sendLog(
-          interaction.guild,
-          "🚨 USUNIĘTO KANAŁY",
-          `Właściciel wykonał komendę usuwania kanałów.\n` +
-          `Usunięto: **${deleted}** kanałów.`
+          `Kanał: ${ticketChannel}`
         );
 
         return;
@@ -1923,57 +1734,43 @@ client.on(Events.InteractionCreate, async interaction => {
   } catch (error) {
 
     console.error(
-      "Błąd Interaction:",
+      "Błąd interactionCreate:",
       error
     );
 
     try {
-
       if (
         interaction.replied ||
         interaction.deferred
       ) {
-
         await interaction.followUp({
           content:
-            "❌ Wystąpił błąd podczas wykonywania operacji.",
+            "❌ Wystąpił błąd.",
           ephemeral: true
         });
-
       } else {
-
         await interaction.reply({
           content:
-            "❌ Wystąpił błąd podczas wykonywania operacji.",
+            "❌ Wystąpił błąd.",
           ephemeral: true
         });
-
       }
-
     } catch {}
   }
 });
 
 // =====================================================
-// LOGOWANIE BOTA
+// TOKEN
 // =====================================================
 
 if (!process.env.DISCORD_TOKEN) {
-
   console.error(
-    "❌ Brak DISCORD_TOKEN w zmiennych środowiskowych."
+    "❌ Brak DISCORD_TOKEN na Renderze."
   );
 
   process.exit(1);
 }
 
-client
-  .login(process.env.DISCORD_TOKEN)
-  .catch(error => {
-
-    console.error(
-      "❌ Nie udało się zalogować bota:"
-    );
-
-    console.error(error);
-  });
+client.login(
+  process.env.DISCORD_TOKEN
+);
